@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernel playground</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel-bg: #ffffff;
+    --fg: #1b1e24;
+    --muted: #5b6270;
+    --grid: #e2e4e9;
+    --border: #d8dbe1;
+    --accent: #2563eb;
+    --accent-fg: #ffffff;
+    --canvas-bg: #101114;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel-bg: #1c1f26;
+      --fg: #e7e9ee;
+      --muted: #9aa2b1;
+      --grid: #333844;
+      --border: #333844;
+      --accent: #6ea8fe;
+      --accent-fg: #0b0d10;
+      --canvas-bg: #05060a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 15px; line-height: 1.5;
+  }
+  header { padding: 18px 20px 0 20px; max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 21px; margin: 0 0 4px 0; }
+  .subtitle { color: var(--muted); font-size: 13.5px; margin-bottom: 14px; }
+  main {
+    padding: 4px 20px 40px 20px;
+    max-width: 1180px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 18px;
+    align-items: start;
+  }
+  @media (max-width: 820px) {
+    main { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .panel + .panel { margin-top: 18px; }
+  .panel h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted); margin: 0 0 12px 0;
+  }
+  label { font-size: 13.5px; }
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row.between { justify-content: space-between; }
+  input[type="file"] {
+    width: 100%; font-size: 13px; color: var(--fg);
+  }
+  .dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12.5px;
+    margin-bottom: 10px;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .dropzone.drag {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  input[type="range"] { width: 100%; }
+  input[type="number"] {
+    width: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 4px;
+    text-align: center;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  select {
+    width: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 13.5px;
+    font-family: inherit;
+  }
+  .kernel-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  button {
+    font-family: inherit;
+    font-size: 13.5px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--panel-bg);
+    color: var(--fg);
+    padding: 8px 12px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+    font-weight: 600;
+    width: 100%;
+    padding: 10px 12px;
+  }
+  button.ghost { background: none; }
+  .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
+  .canvases {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }
+  .canvases + .panel { margin-top: 18px; }
+  @media (max-width: 720px) {
+    .canvases { grid-template-columns: 1fr; }
+  }
+  .canvas-card {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px;
+  }
+  .canvas-card h3 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted); margin: 0 0 8px 0;
+  }
+  .canvas-wrap {
+    background: var(--canvas-bg);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 160px;
+    overflow: hidden;
+  }
+  canvas { display: block; max-width: 100%; height: auto; }
+  .placeholder { color: var(--muted); font-size: 13px; padding: 30px 10px; text-align: center; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .large-panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 12px;
+  }
+  .large-panel-head h2 { margin: 0; }
+  .inline-select { width: auto; min-width: 190px; }
+  .large-wrap { min-height: 420px; }
+  .large-wrap.text-mode { display: block; background: var(--panel-bg); }
+  .explain {
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 1.65;
+    padding: 20px 24px;
+  }
+  .explain h3 { font-size: 15px; margin: 18px 0 6px 0; }
+  .explain h3:first-child { margin-top: 0; }
+  .explain p { margin: 0 0 10px 0; }
+  .explain ul { margin: 0 0 10px 0; padding-left: 20px; }
+  .explain li { margin-bottom: 6px; }
+  .explain code {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12.5px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Kernel playground</h1>
+  <div class="subtitle">Load an image, threshold it, then convolve it with your own 3×3 kernel.</div>
+</header>
+
+<main>
+  <div>
+    <div class="panel">
+      <h2>1. Image</h2>
+      <div id="dropzone" class="dropzone">Drop an image here, or choose a file</div>
+      <input type="file" id="fileInput" accept="image/*">
+      <button id="pasteBtn" class="ghost" style="width: 100%; margin-top: 8px;">Paste from clipboard</button>
+      <div class="hint">Large images are scaled down to keep the convolution fast. You can also just press Ctrl+V / Cmd+V anywhere on the page.</div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Threshold</h2>
+      <div class="field">
+        <div class="checkbox-row">
+          <input type="checkbox" id="thresholdEnabled" checked>
+          <label for="thresholdEnabled">Enable thresholding</label>
+        </div>
+      </div>
+      <div class="field">
+        <div class="row between">
+          <label for="thresholdSlider">Cutoff</label>
+          <span id="thresholdValue" class="hint">128</span>
+        </div>
+        <input type="range" id="thresholdSlider" min="0" max="255" value="128">
+      </div>
+      <div class="hint">Pixels brighter than the cutoff go white, the rest go black.</div>
+    </div>
+
+    <div class="panel">
+      <h2>3. Kernel</h2>
+      <div class="field">
+        <label for="presetSelect">Preset</label>
+        <select id="presetSelect">
+          <option value="custom">Custom</option>
+          <option value="identity">Identity</option>
+          <option value="boxBlur">Box blur</option>
+          <option value="gaussianBlur">Gaussian blur</option>
+          <option value="sharpen">Sharpen</option>
+          <option value="edge">Edge detect</option>
+          <option value="sobelX">Sobel X</option>
+          <option value="sobelY">Sobel Y</option>
+          <option value="emboss">Emboss</option>
+        </select>
+      </div>
+      <div id="kernelGrid" class="kernel-grid"></div>
+      <div class="field">
+        <div class="checkbox-row">
+          <input type="checkbox" id="normalize" checked>
+          <label for="normalize">Normalize by kernel sum</label>
+        </div>
+      </div>
+      <button id="convolveBtn" class="primary">Convolve</button>
+    </div>
+  </div>
+
+  <div>
+    <div class="canvases">
+      <div class="canvas-card">
+        <h3>Original</h3>
+        <div class="canvas-wrap" id="originalWrap"><div class="placeholder">No image loaded</div></div>
+      </div>
+      <div class="canvas-card">
+        <h3>Thresholded</h3>
+        <div class="canvas-wrap" id="threshWrap"><div class="placeholder">&mdash;</div></div>
+      </div>
+      <div class="canvas-card">
+        <h3>Convolved</h3>
+        <div class="canvas-wrap" id="outWrap"><div class="placeholder">&mdash;</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="large-panel-head">
+        <h2>Large view</h2>
+        <select id="largeViewSelect" class="inline-select">
+          <option value="original">Original</option>
+          <option value="thresholded">Thresholded</option>
+          <option value="convolved">Convolved</option>
+          <option value="explain">How does it work?</option>
+        </select>
+      </div>
+      <div class="canvas-wrap large-wrap" id="largeWrap"><div class="placeholder">No image loaded</div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var MAX_DIM = 420;
+
+  var fileInput = document.getElementById("fileInput");
+  var dropzone = document.getElementById("dropzone");
+  var pasteBtn = document.getElementById("pasteBtn");
+  var thresholdEnabled = document.getElementById("thresholdEnabled");
+  var thresholdSlider = document.getElementById("thresholdSlider");
+  var thresholdValue = document.getElementById("thresholdValue");
+  var presetSelect = document.getElementById("presetSelect");
+  var kernelGrid = document.getElementById("kernelGrid");
+  var normalizeBox = document.getElementById("normalize");
+  var convolveBtn = document.getElementById("convolveBtn");
+
+  var originalWrap = document.getElementById("originalWrap");
+  var threshWrap = document.getElementById("threshWrap");
+  var outWrap = document.getElementById("outWrap");
+  var largeWrap = document.getElementById("largeWrap");
+  var largeViewSelect = document.getElementById("largeViewSelect");
+
+  var originalCanvas = null;
+  var threshCanvas = null;
+  var outCanvas = null;
+
+  var EXPLAIN_HTML =
+    '<div class="explain">' +
+    '<h3>Thresholding</h3>' +
+    '<p>Thresholding turns a grayscale image into pure black and white. Every pixel’s brightness (0–255) is compared to the cutoff on the slider: pixels brighter than the cutoff become white (255), the rest become black (0). It’s a quick way to separate a bright object from a dark background before doing anything else with the image.</p>' +
+    '<h3>Convolution kernels</h3>' +
+    '<p>A kernel is a small grid of numbers — here, 3×3. To convolve an image with a kernel, slide the kernel over every pixel. At each position, multiply each of the 9 kernel weights by the pixel underneath it, add the 9 results together, and that sum becomes the new value for the pixel at the center of the kernel.</p>' +
+    '<p>Near the edges of the image, where the kernel would hang off the side, this tool repeats the nearest edge pixel so the output stays the same size as the input.</p>' +
+    '<h3>Why normalize?</h3>' +
+    '<p>Some kernels (like box blur, whose 9 weights are all 1) add up to more than 1, which would make the output much brighter than the input. “Normalize by kernel sum” divides every result by the sum of the weights so overall brightness stays about the same. Turn it off to see the raw, unscaled effect of a kernel.</p>' +
+    '<h3>What the presets do</h3>' +
+    '<ul>' +
+    '<li><strong>Identity</strong> — weight 1 in the center, 0 elsewhere. Passes the image through unchanged.</li>' +
+    '<li><strong>Box blur / Gaussian blur</strong> — averages each pixel with its neighbors, smoothing out detail and noise.</li>' +
+    '<li><strong>Sharpen</strong> — boosts the center pixel relative to its neighbors, exaggerating edges.</li>' +
+    '<li><strong>Edge detect</strong> — a large positive center weight and negative neighbors: flat regions cancel out to zero, and only places where brightness changes sharply light up.</li>' +
+    '<li><strong>Sobel X / Sobel Y</strong> — detect brightness changes in just one direction (horizontal or vertical), the building blocks of gradient-based edge detection.</li>' +
+    '<li><strong>Emboss</strong> — weights push in one diagonal direction, giving edges a raised, 3-D look.</li>' +
+    '</ul>' +
+    '<h3>Worked example</h3>' +
+    '<p>Say the 9 pixels under the kernel (reading left-to-right, top-to-bottom) are:</p>' +
+    '<p><code>0, 255, 0, 255, 255, 255, 0, 255, 0</code></p>' +
+    '<p>and the kernel is box blur, <code>1, 1, 1, 1, 1, 1, 1, 1, 1</code>. Multiplying and summing gives <code>0+255+0+255+255+255+0+255+0 = 1275</code>. Normalized by the kernel’s sum of 9, the output pixel is <code>1275 ÷ 9 ≈ 142</code> — a mid-gray blend of the surrounding black and white pixels.</p>' +
+    '</div>';
+
+  var grayscale = null; // { data: Uint8ClampedArray, width, height }
+
+  var presets = {
+    identity:      [0, 0, 0,  0, 1, 0,  0, 0, 0],
+    boxBlur:       [1, 1, 1,  1, 1, 1,  1, 1, 1],
+    gaussianBlur:  [1, 2, 1,  2, 4, 2,  1, 2, 1],
+    sharpen:       [0, -1, 0,  -1, 5, -1,  0, -1, 0],
+    edge:          [-1, -1, -1,  -1, 8, -1,  -1, -1, -1],
+    sobelX:        [-1, 0, 1,  -2, 0, 2,  -1, 0, 1],
+    sobelY:        [-1, -2, -1,  0, 0, 0,  1, 2, 1],
+    emboss:        [-2, -1, 0,  -1, 1, 1,  0, 1, 2]
+  };
+
+  var kernelInputs = [];
+  (function buildKernelGrid() {
+    for (var i = 0; i < 9; i++) {
+      var inp = document.createElement("input");
+      inp.type = "number";
+      inp.step = "any";
+      inp.value = presets.identity[i];
+      inp.addEventListener("input", function () {
+        presetSelect.value = "custom";
+      });
+      kernelGrid.appendChild(inp);
+      kernelInputs.push(inp);
+    }
+  })();
+
+  function setKernel(values) {
+    for (var i = 0; i < 9; i++) kernelInputs[i].value = values[i];
+  }
+
+  presetSelect.addEventListener("change", function () {
+    var name = presetSelect.value;
+    if (presets[name]) setKernel(presets[name]);
+  });
+
+  function readKernel() {
+    var k = new Array(9);
+    for (var i = 0; i < 9; i++) {
+      var v = parseFloat(kernelInputs[i].value);
+      k[i] = isNaN(v) ? 0 : v;
+    }
+    return k;
+  }
+
+  function makeCanvas(width, height) {
+    var c = document.createElement("canvas");
+    c.width = width;
+    c.height = height;
+    return c;
+  }
+
+  function showCanvas(wrap, canvas) {
+    wrap.innerHTML = "";
+    wrap.appendChild(canvas);
+  }
+
+  function clearCanvas(wrap) {
+    wrap.innerHTML = '<div class="placeholder">&mdash;</div>';
+  }
+
+  function renderLargeView() {
+    var mode = largeViewSelect.value;
+
+    if (mode === "explain") {
+      largeWrap.classList.add("text-mode");
+      largeWrap.innerHTML = EXPLAIN_HTML;
+      return;
+    }
+    largeWrap.classList.remove("text-mode");
+
+    var src = mode === "original" ? originalCanvas
+      : mode === "thresholded" ? threshCanvas
+      : outCanvas;
+
+    if (!src) {
+      var msg = mode === "original" ? "No image loaded" : "&mdash;";
+      largeWrap.innerHTML = '<div class="placeholder">' + msg + '</div>';
+      return;
+    }
+
+    var big = makeCanvas(src.width, src.height);
+    big.getContext("2d").drawImage(src, 0, 0);
+    largeWrap.innerHTML = "";
+    largeWrap.appendChild(big);
+  }
+
+  function loadFile(file) {
+    if (!file || file.type.indexOf("image/") !== 0) return;
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      var img = new Image();
+      img.onload = function () {
+        var scale = Math.min(1, MAX_DIM / Math.max(img.width, img.height));
+        var w = Math.max(1, Math.round(img.width * scale));
+        var h = Math.max(1, Math.round(img.height * scale));
+
+        originalCanvas = makeCanvas(w, h);
+        var octx = originalCanvas.getContext("2d");
+        octx.drawImage(img, 0, 0, w, h);
+        showCanvas(originalWrap, originalCanvas);
+
+        var imgData = octx.getImageData(0, 0, w, h);
+        var data = imgData.data;
+        var gray = new Uint8ClampedArray(w * h);
+        for (var i = 0, p = 0; i < data.length; i += 4, p++) {
+          gray[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        }
+        grayscale = { data: gray, width: w, height: h };
+        outCanvas = null;
+
+        clearCanvas(outWrap);
+        updateThreshold();
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function updateThreshold() {
+    if (!grayscale) return;
+    var w = grayscale.width, h = grayscale.height;
+    threshCanvas = makeCanvas(w, h);
+    var tctx = threshCanvas.getContext("2d");
+    var out = tctx.createImageData(w, h);
+    var enabled = thresholdEnabled.checked;
+    var cutoff = parseInt(thresholdSlider.value, 10);
+
+    for (var p = 0, i = 0; p < grayscale.data.length; p++, i += 4) {
+      var v = grayscale.data[p];
+      if (enabled) v = v > cutoff ? 255 : 0;
+      out.data[i] = v;
+      out.data[i + 1] = v;
+      out.data[i + 2] = v;
+      out.data[i + 3] = 255;
+    }
+    tctx.putImageData(out, 0, 0);
+    showCanvas(threshWrap, threshCanvas);
+    renderLargeView();
+  }
+
+  function convolve() {
+    if (!threshCanvas) return;
+    var w = threshCanvas.width, h = threshCanvas.height;
+    var srcData = threshCanvas.getContext("2d").getImageData(0, 0, w, h).data;
+    var kernel = readKernel();
+
+    var sum = 0;
+    for (var i = 0; i < 9; i++) sum += kernel[i];
+    var divisor = normalizeBox.checked && sum !== 0 ? sum : 1;
+
+    outCanvas = makeCanvas(w, h);
+    var octx = outCanvas.getContext("2d");
+    var out = octx.createImageData(w, h);
+
+    function at(x, y) {
+      x = Math.min(w - 1, Math.max(0, x));
+      y = Math.min(h - 1, Math.max(0, y));
+      return srcData[(y * w + x) * 4];
+    }
+
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var acc = 0;
+        var k = 0;
+        for (var dy = -1; dy <= 1; dy++) {
+          for (var dx = -1; dx <= 1; dx++) {
+            acc += at(x + dx, y + dy) * kernel[k];
+            k++;
+          }
+        }
+        var v = acc / divisor;
+        v = Math.min(255, Math.max(0, v));
+        var idx = (y * w + x) * 4;
+        out.data[idx] = v;
+        out.data[idx + 1] = v;
+        out.data[idx + 2] = v;
+        out.data[idx + 3] = 255;
+      }
+    }
+
+    octx.putImageData(out, 0, 0);
+    showCanvas(outWrap, outCanvas);
+    renderLargeView();
+  }
+
+  fileInput.addEventListener("change", function () {
+    if (fileInput.files && fileInput.files[0]) loadFile(fileInput.files[0]);
+  });
+
+  function imageFromClipboardItems(items) {
+    for (var i = 0; i < items.length; i++) {
+      var types = items[i].types || [items[i].type];
+      for (var j = 0; j < types.length; j++) {
+        if (types[j] && types[j].indexOf("image/") === 0) return items[i];
+      }
+    }
+    return null;
+  }
+
+  pasteBtn.addEventListener("click", function () {
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      alert("Clipboard access isn't available here — try pressing Ctrl+V / Cmd+V on the page instead.");
+      return;
+    }
+    navigator.clipboard.read().then(function (items) {
+      var item = imageFromClipboardItems(items);
+      if (!item) { alert("No image found on the clipboard."); return; }
+      var type = item.types.filter(function (t) { return t.indexOf("image/") === 0; })[0];
+      return item.getType(type).then(loadFile);
+    }).catch(function (err) {
+      alert("Couldn't read the clipboard: " + err.message);
+    });
+  });
+
+  window.addEventListener("paste", function (e) {
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    var item = imageFromClipboardItems(items);
+    if (!item) return;
+    var file = item.getAsFile ? item.getAsFile() : item;
+    if (file) {
+      loadFile(file);
+      e.preventDefault();
+    }
+  });
+
+  ["dragenter", "dragover"].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      dropzone.classList.add("drag");
+    });
+  });
+  ["dragleave", "drop"].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      dropzone.classList.remove("drag");
+    });
+  });
+  dropzone.addEventListener("drop", function (e) {
+    var file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) loadFile(file);
+  });
+  dropzone.addEventListener("click", function () { fileInput.click(); });
+
+  thresholdSlider.addEventListener("input", function () {
+    thresholdValue.textContent = thresholdSlider.value;
+    updateThreshold();
+  });
+  thresholdEnabled.addEventListener("change", updateThreshold);
+
+  convolveBtn.addEventListener("click", convolve);
+
+  largeViewSelect.addEventListener("change", renderLargeView);
+  renderLargeView();
+})();
+</script>
+
+</body>
+</html>

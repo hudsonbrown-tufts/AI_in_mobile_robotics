@@ -1,0 +1,22 @@
+# This repo only syncs the "Public stuff" folder.
+# Everything else in this working directory is ignored on purpose.
+*
+!.gitignore
+!README.md
+!Public stuff/
+!Public stuff/**
+
+# OS / editor junk files, ignored even inside "Public stuff"
+**/.DS_Store
+**/.DS_Store?
+**/._*
+**/.Spotlight-V100
+**/.Trashes
+**/ehthumbs.db
+**/Thumbs.db
+**/desktop.ini
+
+# Python bytecode caches, ignored even inside "Public stuff"
+**/__pycache__/
+**/*.pyc
+**/*.pyo

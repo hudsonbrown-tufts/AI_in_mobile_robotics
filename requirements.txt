@@ -1,0 +1,13 @@
+# Add project dependencies here, then:
+#   pip install -r requirements.txt
+#
+# Freeze exact versions with:
+#   pip freeze > requirements.txt
+
+legoeducation>=1.1.1
+pillow>=10.0.0
+requests>=2.31.0
+numpy>=1.26.0
+opencv-python>=4.9.0
+scikit-image>=0.22.0
+
