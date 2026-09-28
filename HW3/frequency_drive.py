@@ -67,7 +67,7 @@ CARD_SERIAL = "5164"
 # never narrower than NOTE_TOLERANCE_MIN_HZ (FFT bins are ~15-45 Hz wide, so
 # low notes need a floor). Widen these if notes aren't being picked up
 # reliably; narrow them if the wrong note keeps triggering.
-NOTE_TOLERANCE_PERCENT = 6
+NOTE_TOLERANCE_PERCENT = 5
 NOTE_TOLERANCE_MIN_HZ = 25
 
 # How long (seconds) to listen for each note during calibration, and the
