@@ -1,9 +1,11 @@
 """
 Drive a LEGO Education Double Motor using tones picked up by the computer
-microphone. The dominant frequency of each audio chunk is matched against
-one of four tunable frequency ranges (forward/backward/left/right); the
-motor drives in the matching direction, or stops if the sound is too quiet
-or falls in more than one range at once.
+microphone. On startup you play one note for each command
+(forward/backward/left/right), and the
+program records its pitch. After that, the dominant frequency of each audio
+chunk is matched to the nearest calibrated note within a tolerance window;
+the motor drives in the matching direction, or stops if the sound is too
+quiet or not close enough to any calibrated note.
 
 Also plays a two-player "ball vs. goalie" game over MQTT: the ball's light
 sensor detects when it's been caught and announces "I lost"; the goalie
@@ -34,7 +36,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # constants, so the ball and goalie automatically stay in sync.
 MQTT_TOPIC = "ME193/hudson"
 MQTT_LOST_MESSAGE = "I lost"  # ball: caught by the light sensor -> goalie hears this and wins (win.mp3)
-MQTT_GOAL_MESSAGE = "I made it in the goal!"  # ball: heard the FREQ_GOAL tone -> goalie hears this and loses (lost.mp3)
+MQTT_GOAL_MESSAGE = "I made it in the goal!"  # ball: got MQTT_GOAL_TRIGGER_MESSAGE -> goalie hears this and loses (lost.mp3)
+MQTT_GOAL_TRIGGER_MESSAGE = "GOAL!!!"  # sent to the topic (by anyone) to tell the ball it scored
 
 # The public test.mosquitto.org broker occasionally has a transient DNS/
 # network hiccup; retry the initial connection a few times before giving up.
@@ -57,18 +60,29 @@ OUTPUT_DEVICE_NAME_HINT = "Speakers"
 CARD_COLOR = le.LEGO_COLOR_PURPLE
 CARD_SERIAL = "5164"
 
-# Frequency ranges (Hz) for each direction. Tune these to whatever tone
-# source you're using (voice, tone generator app, etc). Ranges should not
-# overlap, or that overlapping band will be treated as "no command".
-FREQ_FORWARD = (200, 400)
-FREQ_BACKWARD = (400, 600)
-FREQ_LEFT = (600, 800)
-FREQ_RIGHT = (800, 1000)
+# Note calibration. At startup you play one note per command and the
+# program records its pitch. A heard frequency then counts as that note if
+# it's within +/- tolerance_hz() of it, where the tolerance is
+# NOTE_TOLERANCE_PERCENT of the note's frequency (6% ~= one semitone), but
+# never narrower than NOTE_TOLERANCE_MIN_HZ (FFT bins are ~15-45 Hz wide, so
+# low notes need a floor). Widen these if notes aren't being picked up
+# reliably; narrow them if the wrong note keeps triggering.
+NOTE_TOLERANCE_PERCENT = 6
+NOTE_TOLERANCE_MIN_HZ = 25
 
-# Separate "goal" tone (Hz) — not a drive direction. If the ball hears this
-# while playing as the ball, it announces a goal over MQTT (see _drive()).
-# Must not overlap the ranges above.
-FREQ_GOAL = (1000, 1200)
+# How long (seconds) to listen for each note during calibration, and the
+# minimum number of loud-enough audio chunks needed to accept a reading.
+CALIBRATION_SECONDS = 3.0
+CALIBRATION_MIN_CHUNKS = 5
+
+# How many consecutive audio chunks (~23 ms each at 44.1 kHz) must agree on
+# a direction (or on silence) before the motor command changes. Raise this if
+# the robot twitches on stray noise; lower it for faster response.
+DIRECTION_CONFIRM_CHUNKS = 3
+
+# While stopped, re-send the stop command this often (seconds) in case an
+# earlier one was lost over Bluetooth.
+STOP_RESEND_SECONDS = 0.5
 
 # Motor speed (0-100%) for each direction.
 SPEED_FORWARD = 50
@@ -93,15 +107,15 @@ INPUT_DEVICE_NAME_HINT = "WH-1000XM4"
 # to quiet room noise; lower it if quiet tones aren't being picked up. Note
 # this is a consistent relative loudness scale, not a calibrated dB SPL
 # meter reading (that would require calibrating against your specific mic).
-AMPLITUDE_THRESHOLD_DB = 65
+AMPLITUDE_THRESHOLD_DB = 70
 
 # Bandpass filter applied to each audio chunk before frequency analysis, to
 # suppress background noise (low rumble, HVAC hum, hiss, etc) outside the
-# range of tones we care about. Keep LOW/HIGH wide enough to cover all the
-# FREQ_* ranges above (including FREQ_GOAL); ORDER is the Butterworth filter
-# order (higher = sharper cutoff but more ringing).
-BANDPASS_LOW_HZ = 150
-BANDPASS_HIGH_HZ = 1300
+# range of tones we care about. The notes you play during calibration must
+# fall inside LOW/HIGH, or they'll be filtered out; ORDER is the Butterworth
+# filter order (higher = sharper cutoff but more ringing).
+BANDPASS_LOW_HZ = 100
+BANDPASS_HIGH_HZ = 2000
 BANDPASS_ORDER = 4
 
 # Light/Color sensor (same Connection Card as the Double Motor) — proximity
@@ -110,12 +124,12 @@ BANDPASS_ORDER = 4
 # watching the live "Reflection" value printed on screen.
 PROXIMITY_REFLECTION_THRESHOLD = 50
 
-# name -> (frequency range, legoeducation movement direction constant, speed)
+# name -> (legoeducation movement direction constant, speed)
 DIRECTIONS = {
-    "FORWARD": (FREQ_FORWARD, le.MOVEMENT_DIRECTION_FORWARD, SPEED_FORWARD),
-    "BACKWARD": (FREQ_BACKWARD, le.MOVEMENT_DIRECTION_BACKWARD, SPEED_BACKWARD),
-    "LEFT": (FREQ_LEFT, le.MOVEMENT_DIRECTION_LEFT, SPEED_LEFT),
-    "RIGHT": (FREQ_RIGHT, le.MOVEMENT_DIRECTION_RIGHT, SPEED_RIGHT),
+    "FORWARD": (le.MOVEMENT_DIRECTION_FORWARD, SPEED_FORWARD),
+    "BACKWARD": (le.MOVEMENT_DIRECTION_BACKWARD, SPEED_BACKWARD),
+    "LEFT": (le.MOVEMENT_DIRECTION_LEFT, SPEED_LEFT),
+    "RIGHT": (le.MOVEMENT_DIRECTION_RIGHT, SPEED_RIGHT),
 }
 
 
@@ -147,19 +161,95 @@ def amplitude_db(samples):
     return 20 * np.log10(rms + 1e-6)
 
 
-def direction_for_frequency(freq):
-    """Return the matching direction name, or None for silence/ambiguous."""
-    matches = [
-        name
-        for name, (freq_range, _, _) in DIRECTIONS.items()
-        if freq_range[0] <= freq <= freq_range[1]
-    ]
-    return matches[0] if len(matches) == 1 else None
+def tolerance_hz(note_freq):
+    """Return the +/- window (Hz) around a calibrated note that still counts
+    as that note."""
+    return max(note_freq * NOTE_TOLERANCE_PERCENT / 100, NOTE_TOLERANCE_MIN_HZ)
 
 
-def is_goal_frequency(freq):
-    """Return True if `freq` falls in the FREQ_GOAL tone range."""
-    return FREQ_GOAL[0] <= freq <= FREQ_GOAL[1]
+def note_for_frequency(freq, notes):
+    """Return the name of the calibrated note nearest to `freq`, or None if
+    `freq` isn't within that note's tolerance window. `notes` maps
+    name -> calibrated frequency (Hz)."""
+    if not notes:
+        return None
+    name, note_freq = min(notes.items(), key=lambda item: abs(item[1] - freq))
+    return name if abs(note_freq - freq) <= tolerance_hz(note_freq) else None
+
+
+def record_note(stream, rate, sos):
+    """Listen for CALIBRATION_SECONDS and return the median dominant
+    frequency (Hz) of the loud-enough chunks, or None if too few chunks were
+    above AMPLITUDE_THRESHOLD_DB."""
+    # Drop audio that piled up in the buffer while we were waiting on input().
+    stale_frames = stream.get_read_available()
+    if stale_frames:
+        stream.read(stale_frames, exception_on_overflow=False)
+
+    filter_state = sosfilt_zi(sos) * 0
+    freqs = []
+    num_chunks = int(CALIBRATION_SECONDS * rate / CHUNK_SIZE)
+    for i in range(num_chunks):
+        data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float64)
+        filtered_samples, filter_state = sosfilt(sos, samples, zi=filter_state)
+        if i < 2:
+            continue  # let the freshly-reset filter settle
+        level_db = amplitude_db(filtered_samples)
+        if level_db >= AMPLITUDE_THRESHOLD_DB:
+            freq = dominant_frequency(filtered_samples, rate)
+            freqs.append(freq)
+            print(f"\r  Hearing {freq:7.1f} Hz at {level_db:5.1f} dB", end="", flush=True)
+    print()
+
+    if len(freqs) < CALIBRATION_MIN_CHUNKS:
+        return None
+    return float(np.median(freqs))
+
+
+def calibrate_notes(stream, rate, sos, names):
+    """Ask the user to play one note per name and record each one's pitch.
+    Rejects a note whose tolerance window overlaps an already-calibrated
+    note, since the two couldn't be told apart reliably. Returns a dict of
+    name -> frequency (Hz)."""
+    print("\n--- Note calibration ---")
+    print(f"For each command, press Enter, then play and hold your note for ~{CALIBRATION_SECONDS:g} s.")
+    notes = {}
+    for name in names:
+        while True:
+            input(f"\nPress Enter, then play the note for {name}...")
+            freq = record_note(stream, rate, sos)
+            if freq is None:
+                print(
+                    f"  Didn't hear a loud enough note (need >= {AMPLITUDE_THRESHOLD_DB} dB). "
+                    "Play louder or closer to the mic and try again."
+                )
+                continue
+
+            clash = next(
+                (
+                    other
+                    for other, other_freq in notes.items()
+                    if abs(other_freq - freq) <= tolerance_hz(other_freq) + tolerance_hz(freq)
+                ),
+                None,
+            )
+            if clash is not None:
+                print(
+                    f"  Heard {freq:.1f} Hz, which is too close to {clash} ({notes[clash]:.1f} Hz). "
+                    "Pick a note further away and try again."
+                )
+                continue
+
+            notes[name] = freq
+            print(f"  {name} = {freq:.1f} Hz (accepts {freq - tolerance_hz(freq):.1f}-{freq + tolerance_hz(freq):.1f} Hz)")
+            break
+
+    print("\nCalibration done:")
+    for name, freq in notes.items():
+        print(f"  {name:8s} {freq:7.1f} Hz +/- {tolerance_hz(freq):.1f} Hz")
+    print()
+    return notes
 
 
 def list_input_devices():
@@ -315,9 +405,15 @@ def main():
     # action (reacting to "I lost") has finished.
     game_over = threading.Event()
 
+    # Set by handle_mqtt_message when the ball receives
+    # MQTT_GOAL_TRIGGER_MESSAGE; _drive()'s main loop then announces the goal.
+    goal_scored = threading.Event()
+
     def handle_mqtt_message(topic, payload):
         print(f"\n[MQTT] Got message on '{topic}': {payload}")
-        if role != "goalie":
+        if role == "ball":
+            if payload == MQTT_GOAL_TRIGGER_MESSAGE:
+                goal_scored.set()
             return
 
         if payload == MQTT_LOST_MESSAGE:
@@ -341,18 +437,23 @@ def main():
         time.sleep(1)  # give the subscription time to reach the broker
         print(f"Joined MQTT topic '{MQTT_TOPIC}' on test.mosquitto.org.")
 
-        _drive(mqtt_client, role, game_over)
+        _drive(mqtt_client, role, game_over, goal_scored)
     finally:
         mqtt_client.disconnect()
 
 
-def _drive(mqtt_client, role, game_over):
+def _drive(mqtt_client, role, game_over, goal_scored):
     motor = le.DoubleMotor()
     motor.connect(card_color=CARD_COLOR, card_serial=CARD_SERIAL)
 
     if not motor.connected:
         print("Error connecting to Double Motor.")
         sys.exit(1)
+
+    # Brake (rather than coast) when stopped, and make sure the motor isn't
+    # still running from a previous session whose shutdown didn't complete.
+    motor.movement_set_end_state(le.MOTOR_END_STATE_BRAKE)
+    motor.movement_stop()
 
     # Only the ball uses the light sensor; the goalie doesn't touch it.
     sensor = None
@@ -368,14 +469,19 @@ def _drive(mqtt_client, role, game_over):
     device_info = choose_input_device(audio)
     stream, actual_rate = open_input_stream(audio, device_info)
     print(f"Using input device: {device_info['name']!r} at {actual_rate} Hz")
-    print("Press 'q' or Esc to quit.")
 
     sos = design_bandpass(actual_rate)
+
+    notes = calibrate_notes(stream, actual_rate, sos, list(DIRECTIONS))
+    print("Press 'q' or Esc to quit.")
+
     filter_state = sosfilt_zi(sos) * 0
 
-    current_direction = None
+    current_direction = None  # what the motor was last commanded to do
+    candidate_direction = None  # what we're hearing, pending confirmation
+    candidate_chunks = 0
+    last_stop_time = time.monotonic()
     object_close = False
-    in_goal = False
 
     try:
         while True:
@@ -394,20 +500,29 @@ def _drive(mqtt_client, role, game_over):
             freq = dominant_frequency(filtered_samples, actual_rate)
             level_db = amplitude_db(filtered_samples)
             heard_tone = level_db >= AMPLITUDE_THRESHOLD_DB
-            direction = direction_for_frequency(freq) if heard_tone else None
+            heard_direction = note_for_frequency(freq, notes) if heard_tone else None
+
+            # Only change what the motor does once the same direction (or
+            # silence) has been heard for DIRECTION_CONFIRM_CHUNKS chunks in
+            # a row, so single noisy chunks don't make the robot twitch.
+            if heard_direction == candidate_direction:
+                candidate_chunks += 1
+            else:
+                candidate_direction = heard_direction
+                candidate_chunks = 1
+            direction = current_direction
+            if candidate_chunks >= DIRECTION_CONFIRM_CHUNKS:
+                direction = candidate_direction
 
             status = f"\rFrequency: {freq:7.1f} Hz | Level: {level_db:5.1f} dB"
 
-            if role == "ball":
-                was_in_goal = in_goal
-                in_goal = heard_tone and is_goal_frequency(freq)
-                if in_goal and not was_in_goal:
-                    print(f"\nGoal! Sending '{MQTT_GOAL_MESSAGE}' — playing win sound.")
-                    mqtt_client.publish(MQTT_TOPIC, MQTT_GOAL_MESSAGE)
-                    play_sound(SOUND_WIN_PATH)
-                    wait_for_sound_to_finish()
-                    print("Game over — ending program.")
-                    break
+            if goal_scored.is_set():
+                print(f"\nGoal! Sending '{MQTT_GOAL_MESSAGE}' — playing win sound.")
+                mqtt_client.publish(MQTT_TOPIC, MQTT_GOAL_MESSAGE)
+                play_sound(SOUND_WIN_PATH)
+                wait_for_sound_to_finish()
+                print("Game over — ending program.")
+                break
 
             if sensor is not None:
                 reflection = sensor.sensor.reflection
@@ -425,13 +540,20 @@ def _drive(mqtt_client, role, game_over):
             status += f" | Direction: {direction or 'STOP':8s}"
             print(status, end="", flush=True)
 
+            now = time.monotonic()
             if direction != current_direction:
                 if direction is None:
                     motor.movement_stop(blocking=False)
+                    last_stop_time = now
                 else:
-                    _, move_direction, speed = DIRECTIONS[direction]
+                    move_direction, speed = DIRECTIONS[direction]
                     motor.movement_move(direction=move_direction, speed=speed, blocking=False)
                 current_direction = direction
+            elif direction is None and now - last_stop_time >= STOP_RESEND_SECONDS:
+                # Keep re-sending stop while stopped, in case an earlier stop
+                # command was dropped over Bluetooth.
+                motor.movement_stop(blocking=False)
+                last_stop_time = now
 
     except KeyboardInterrupt:
         print("\nStopping...")
