@@ -36,8 +36,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # constants, so the ball and goalie automatically stay in sync.
 MQTT_TOPIC = "ME193/hudson"
 MQTT_LOST_MESSAGE = "I lost"  # ball: caught by the light sensor -> goalie hears this and wins (win.mp3)
-MQTT_GOAL_MESSAGE = "I made it in the goal!"  # ball: got MQTT_GOAL_TRIGGER_MESSAGE -> goalie hears this and loses (lost.mp3)
+MQTT_GOAL_MESSAGE = "Goal"  # ball: got MQTT_GOAL_TRIGGER_MESSAGE -> goalie hears this and loses (lost.mp3)
 MQTT_GOAL_TRIGGER_MESSAGE = "GOAL!!!"  # sent to the topic (by anyone) to tell the ball it scored
+
+# Separate topic watched for a start signal; receiving MQTT_START_MESSAGE on
+# it prints "START!!".
+MQTT_START_TOPIC = "ME193/Rogers"
+MQTT_START_MESSAGE = "start"
 
 # The public test.mosquitto.org broker occasionally has a transient DNS/
 # network hiccup; retry the initial connection a few times before giving up.
@@ -67,7 +72,7 @@ CARD_SERIAL = "5164"
 # never narrower than NOTE_TOLERANCE_MIN_HZ (FFT bins are ~15-45 Hz wide, so
 # low notes need a floor). Widen these if notes aren't being picked up
 # reliably; narrow them if the wrong note keeps triggering.
-NOTE_TOLERANCE_PERCENT = 5
+NOTE_TOLERANCE_PERCENT = 6
 NOTE_TOLERANCE_MIN_HZ = 25
 
 # How long (seconds) to listen for each note during calibration, and the
@@ -429,13 +434,18 @@ def main():
         print("Game over — ending program.")
         game_over.set()
 
+    def handle_start_message(topic, payload):
+        if payload.strip() == MQTT_START_MESSAGE:
+            print("\nSTART!!")
+
     mqtt_client = MQTTClient()
     connect_mqtt(mqtt_client)
 
     try:
         mqtt_client.subscribe(MQTT_TOPIC, handle_mqtt_message)
-        time.sleep(1)  # give the subscription time to reach the broker
-        print(f"Joined MQTT topic '{MQTT_TOPIC}' on test.mosquitto.org.")
+        mqtt_client.subscribe(MQTT_START_TOPIC, handle_start_message)
+        time.sleep(1)  # give the subscriptions time to reach the broker
+        print(f"Joined MQTT topics '{MQTT_TOPIC}' and '{MQTT_START_TOPIC}' on test.mosquitto.org.")
 
         _drive(mqtt_client, role, game_over, goal_scored)
     finally:
