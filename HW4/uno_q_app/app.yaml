@@ -1,3 +1,6 @@
 name: Minifig Tracker
+description: "Lights one pixel on the LED matrix where the minifig is in the computer's camera frame (positions arrive over MQTT)."
 icon: 🟩
-description: Lights one pixel on the LED matrix where the minifig is in the computer's camera frame (positions arrive over MQTT).
+version: "1.0.0"
+ports: []
+bricks: []

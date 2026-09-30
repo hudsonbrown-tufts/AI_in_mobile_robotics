@@ -4,6 +4,14 @@
 # "minifig:none" messages sent by HW4/minifig_tracker.py on the computer,
 # and forwards them over the Bridge to the sketch, which drives the matrix.
 # Any other message on the topic (e.g. HW3's game messages) is ignored.
+#
+# The MQTT callback runs on paho's network thread, so it only records the
+# latest position; loop() (run by App.run on the app's own thread) makes the
+# Bridge calls. This also drops intermediate positions if messages arrive
+# faster than the Bridge can forward them.
+
+import threading
+import time
 
 import paho.mqtt.client as mqtt
 from arduino.app_utils import App, Bridge
@@ -15,6 +23,12 @@ MESSAGE_PREFIX = "minifig:"
 
 MATRIX_COLS = 13
 MATRIX_ROWS = 8
+
+# Latest position from MQTT: (col, row), "none", or None if nothing received
+# yet. `pending` is set when it changes and cleared once forwarded.
+_lock = threading.Lock()
+_latest = None
+_pending = False
 
 
 def parse(payload):
@@ -40,18 +54,36 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 
 def on_message(client, userdata, msg):
+    global _latest, _pending
     payload = msg.payload.decode(errors="replace")
     parsed = parse(payload)
     if parsed is None:
         return
-    try:
-        if parsed == "none":
-            Bridge.call("clear_matrix")
-        else:
-            Bridge.call("set_pixel", parsed[0], parsed[1])
-        print(f"<- {payload}")
-    except Exception as exc:
-        print(f"Bridge call for '{payload}' failed: {exc}")
+    with _lock:
+        _latest = parsed
+        _pending = True
+
+
+def loop():
+    global _pending
+    with _lock:
+        position, send = _latest, _pending
+        _pending = False
+
+    if send:
+        try:
+            if position == "none":
+                Bridge.call("clear_matrix")
+                print("<- none (matrix cleared)")
+            else:
+                # Resends of the same position still go through, which
+                # refreshes the sketch's stale-pixel timeout.
+                Bridge.call("set_pixel", position[0], position[1])
+                print(f"<- pixel {position[0]},{position[1]}")
+        except Exception as exc:
+            print(f"Bridge call for {position} failed: {exc}")
+
+    time.sleep(0.02)
 
 
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -60,4 +92,14 @@ client.on_message = on_message
 client.connect_async(BROKER, PORT)
 client.loop_start()  # network traffic + reconnects on a background thread
 
-App.run()
+# App.run() exits via SystemExit on stop, so cleanup must be in a finally
+# wrapped around it (code after App.run() never runs).
+try:
+    App.run(user_loop=loop)
+finally:
+    client.loop_stop()
+    client.disconnect()
+    try:
+        Bridge.call("clear_matrix")
+    except Exception:
+        pass
