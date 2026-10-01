@@ -1,0 +1,6 @@
+name: Minifig Car
+description: "Drives two Maker Drive motors with speed commands from the computer's PID minifig-centering program (over MQTT)."
+icon: 🚗
+version: "1.0.0"
+ports: []
+bricks: []
