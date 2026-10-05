@@ -11,3 +11,4 @@ numpy>=1.26.0
 opencv-python>=4.9.0
 scikit-image>=0.22.0
 
+cv2-enumerate-cameras>=1.1

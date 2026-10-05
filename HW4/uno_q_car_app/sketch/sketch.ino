@@ -7,6 +7,8 @@
 //
 // The Linux side (python/main.py) calls over the Bridge:
 //   set_speed(speed)  -> speed -100..100 (% of full power) for both motors
+// Both motors always get the same PWM duty: there is a single speed, and the
+// duty is computed once and written to both motors together.
 // If no command arrives for COMMAND_TIMEOUT_MS, the motors stop, so the car
 // halts if the computer program, Wi-Fi, or MQTT broker drops out.
 //
@@ -14,16 +16,18 @@
 
 #include <Arduino_RouterBridge.h>
 
-// PWM-capable pins wired to the Maker Drive inputs. Change to match your wiring.
+// PWM-capable pins wired to the Maker Drive inputs (all four are 500 Hz PWM
+// on the UNO Q). Change to match your wiring.
 const int M1A_PIN = 3;
 const int M1B_PIN = 5;
 const int M2A_PIN = 6;
 const int M2B_PIN = 9;
 
-// Motors mounted mirror-image on a car spin opposite ways for the same
-// command; set one of these true so both wheels drive the car the same way.
-const bool INVERT_M1 = false;
-const bool INVERT_M2 = true;
+// Direction only (never speed). Motors mounted mirror-image on a car spin
+// opposite ways for the same command, so one is inverted. Flip BOTH to
+// reverse which way the car drives; flip ONE if the wheels fight each other.
+const bool INVERT_M1 = true;
+const bool INVERT_M2 = false;
 
 const unsigned long COMMAND_TIMEOUT_MS = 500;
 
@@ -41,19 +45,19 @@ void set_speed(int speed) {
   dirty = true;
 }
 
-void driveMotor(int pinA, int pinB, int speed, bool invert) {
-  if (invert) speed = -speed;
+// Set one motor's direction with the shared duty `pwm` (0 = stop).
+void writeMotor(int pinA, int pinB, bool forward, int pwm) {
+  analogWrite(pinA, forward ? pwm : 0);
+  analogWrite(pinB, forward ? 0 : pwm);
+}
+
+// Drive both motors at the same speed. The duty is computed once, so the two
+// motors can't receive different speeds.
+void driveBoth(int speed) {
   int pwm = map(abs(speed), 0, 100, 0, 255);
-  if (speed > 0) {
-    analogWrite(pinA, pwm);
-    analogWrite(pinB, 0);
-  } else if (speed < 0) {
-    analogWrite(pinA, 0);
-    analogWrite(pinB, pwm);
-  } else {
-    analogWrite(pinA, 0);
-    analogWrite(pinB, 0);
-  }
+  bool forward = speed >= 0;
+  writeMotor(M1A_PIN, M1B_PIN, forward != INVERT_M1, pwm);
+  writeMotor(M2A_PIN, M2B_PIN, forward != INVERT_M2, pwm);
 }
 
 void setup() {
@@ -61,8 +65,7 @@ void setup() {
   pinMode(M1B_PIN, OUTPUT);
   pinMode(M2A_PIN, OUTPUT);
   pinMode(M2B_PIN, OUTPUT);
-  driveMotor(M1A_PIN, M1B_PIN, 0, INVERT_M1);
-  driveMotor(M2A_PIN, M2B_PIN, 0, INVERT_M2);
+  driveBoth(0);
 
   Bridge.begin();
   Bridge.provide("set_speed", set_speed);
@@ -76,9 +79,7 @@ void loop() {
 
   if (dirty) {
     dirty = false;
-    int speed = targetSpeed;
-    driveMotor(M1A_PIN, M1B_PIN, speed, INVERT_M1);
-    driveMotor(M2A_PIN, M2B_PIN, speed, INVERT_M2);
+    driveBoth(targetSpeed);
   }
 
   delay(10);

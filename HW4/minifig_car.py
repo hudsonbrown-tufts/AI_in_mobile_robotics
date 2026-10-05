@@ -9,13 +9,17 @@ minifig_tracker.py (test.mosquitto.org, "ME193/hudson"):
     car:stop      stop both motors
 The "car:" prefix lets the UNO Q ignore the tracker's and HW3's messages.
 
-Tune the gains with the constants below, or live with the sliders in the
-"PID gains" window (slider values are printed so you can copy good ones back).
+Tune the gains and the detection confidence with the constants below, or
+live with the sliders in the "Tuning" window (changes are printed so you can
+copy good values back).
 
 Usage:
     python minifig_car.py            # track, run PID, drive the car
     python minifig_car.py --dry-run  # track and print commands only
-Press 'q' in the preview window to quit (the car is told to stop).
+Keys in the preview window:
+    q   quit (the car is told to stop)
+    s   save the current camera frame to captures/ (to label in Roboflow
+        and retrain, so the model learns what the minifig looks like from here)
 """
 
 import argparse
@@ -25,11 +29,26 @@ import cv2
 import torch
 from ultralytics import YOLO
 
-from minifig_tracker import (CAMERA_INDEX, CONFIDENCE_THRESHOLD, MQTT_TOPIC, WEIGHTS,
-                             best_detection, connect_mqtt)
+from minifig_tracker import HERE, MQTT_TOPIC, WEIGHTS, connect_mqtt, list_cameras, open_camera
 from mqttlib import MQTTClient
 
 MESSAGE_PREFIX = "car:"
+
+# --- Detection ---------------------------------------------------------------
+# Minimum model confidence to accept a detection. Lower finds the minifig more
+# often (especially small / far away) but risks locking onto look-alikes.
+CONFIDENCE_THRESHOLD = 0.25
+# Detections down to this confidence are drawn in grey with their score, so you
+# can see what the model almost found and pick a good threshold.
+SHOW_CONFIDENCE_FLOOR = 0.05
+# Model input size. The training photos were close-ups; a minifig across the
+# room is only a few pixels wide, and a bigger input size helps the model see
+# it (try 960 or 1280). Larger = slower, especially without the GPU.
+IMAGE_SIZE = 960
+# Camera capture resolution (more pixels on a small minifig). Set to None to
+# use the camera's default.
+CAMERA_RESOLUTION = (1280, 720)
+CAPTURE_DIR = HERE / "captures"
 
 # --- PID tuning --------------------------------------------------------------
 # Error is the minifig's horizontal offset from the frame center, as a
@@ -51,11 +70,12 @@ DRIVE_DIRECTION = 1
 MISSED_FRAMES_BEFORE_STOP = 5  # consecutive frames without a minifig before stopping
 SEND_INTERVAL_SECONDS = 0.1    # send at 10 Hz; the UNO Q stops if commands stop arriving
 
-# Slider ranges: Kp slider is the gain itself; Ki/Kd sliders are gain x10.
+# Slider ranges: Kp slider is the gain itself; Ki/Kd sliders are gain x10;
+# confidence slider is in %.
 KP_SLIDER_MAX = 200
 KI_SLIDER_MAX = 500
 KD_SLIDER_MAX = 500
-GAINS_WINDOW = "PID gains"
+TUNING_WINDOW = "Tuning"
 
 
 class PID:
@@ -85,6 +105,21 @@ class PID:
         return max(-self.output_limit, min(self.output_limit, output))
 
 
+def split_detections(result, threshold):
+    """Return ((box, conf) of the most confident detection at or above
+    `threshold`, or None) and a list of (box, conf) below it."""
+    best, rejected = None, []
+    boxes = result.boxes
+    if boxes is None:
+        return best, rejected
+    for box, conf in zip(boxes.xyxy.tolist(), boxes.conf.tolist()):
+        if conf < threshold:
+            rejected.append((box, conf))
+        elif best is None or conf > best[1]:
+            best = (box, conf)
+    return best, rejected
+
+
 def horizontal_error(box, frame_width):
     """Minifig center's offset from the frame center, in -1..1."""
     cx = (box[0] + box[2]) / 2
@@ -100,22 +135,26 @@ def apply_min_speed(output):
     return sign * max(abs(output), MIN_SPEED)
 
 
-def create_gain_sliders():
-    cv2.namedWindow(GAINS_WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(GAINS_WINDOW, 400, 130)
-    cv2.createTrackbar("Kp", GAINS_WINDOW, int(round(KP)), KP_SLIDER_MAX, lambda v: None)
-    cv2.createTrackbar("Ki x10", GAINS_WINDOW, int(round(KI * 10)), KI_SLIDER_MAX, lambda v: None)
-    cv2.createTrackbar("Kd x10", GAINS_WINDOW, int(round(KD * 10)), KD_SLIDER_MAX, lambda v: None)
+def create_tuning_sliders():
+    cv2.namedWindow(TUNING_WINDOW, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(TUNING_WINDOW, 400, 170)
+    cv2.createTrackbar("Kp", TUNING_WINDOW, int(round(KP)), KP_SLIDER_MAX, lambda v: None)
+    cv2.createTrackbar("Ki x10", TUNING_WINDOW, int(round(KI * 10)), KI_SLIDER_MAX, lambda v: None)
+    cv2.createTrackbar("Kd x10", TUNING_WINDOW, int(round(KD * 10)), KD_SLIDER_MAX, lambda v: None)
+    cv2.createTrackbar("Conf %", TUNING_WINDOW, int(round(CONFIDENCE_THRESHOLD * 100)), 95, lambda v: None)
+    cv2.setTrackbarMin("Conf %", TUNING_WINDOW, 1)
 
 
-def read_gain_sliders():
-    kp = cv2.getTrackbarPos("Kp", GAINS_WINDOW)
-    ki = cv2.getTrackbarPos("Ki x10", GAINS_WINDOW) / 10
-    kd = cv2.getTrackbarPos("Kd x10", GAINS_WINDOW) / 10
-    return kp, ki, kd
+def read_tuning_sliders():
+    """Return ((kp, ki, kd), confidence threshold)."""
+    kp = cv2.getTrackbarPos("Kp", TUNING_WINDOW)
+    ki = cv2.getTrackbarPos("Ki x10", TUNING_WINDOW) / 10
+    kd = cv2.getTrackbarPos("Kd x10", TUNING_WINDOW) / 10
+    conf = cv2.getTrackbarPos("Conf %", TUNING_WINDOW) / 100
+    return (kp, ki, kd), conf
 
 
-def draw_overlay(frame, box, error, speed, pid, fps):
+def draw_overlay(frame, best, rejected, error, speed, pid, conf_threshold, fps):
     h, w = frame.shape[:2]
     cx = w // 2
     band = int(DEADBAND * w / 2)
@@ -123,16 +162,25 @@ def draw_overlay(frame, box, error, speed, pid, fps):
     cv2.line(frame, (cx - band, 0), (cx - band, h), (0, 120, 0), 1)
     cv2.line(frame, (cx + band, 0), (cx + band, h), (0, 120, 0), 1)
 
-    if box is not None:
+    for box, conf in rejected:
+        x1, y1, x2, y2 = map(int, box)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (150, 150, 150), 1)
+        cv2.putText(frame, f"{conf:.2f}", (x1, max(y1 - 4, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+
+    if best is not None:
+        box, conf = best
         x1, y1, x2, y2 = map(int, box)
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
+        cv2.putText(frame, f"{conf:.2f}", (x1, max(y1 - 6, 14)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
         bx = (x1 + x2) // 2
         cv2.line(frame, (cx, h // 2), (bx, h // 2), (0, 200, 255), 2)
 
     status = f"err {error:+.2f}" if error is not None else "no minifig"
     lines = [
         f"{status}  speed {speed:+.0f}%  {fps:.0f} fps",
-        f"Kp {pid.kp:g}  Ki {pid.ki:g}  Kd {pid.kd:g}",
+        f"Kp {pid.kp:g}  Ki {pid.ki:g}  Kd {pid.kd:g}  conf >= {conf_threshold:.2f}",
     ]
     for i, text in enumerate(lines):
         cv2.putText(frame, text, (10, 25 + 25 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -141,15 +189,25 @@ def draw_overlay(frame, box, error, speed, pid, fps):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="print commands instead of publishing")
+    parser.add_argument("--list-cameras", action="store_true", help="list cameras and exit")
     args = parser.parse_args()
+    if args.list_cameras:
+        list_cameras()
+        return
 
     device = 0 if torch.cuda.is_available() else "cpu"
     model = YOLO(WEIGHTS)
-    print(f"Loaded {WEIGHTS.name}, running on device={device!r}")
+    print(f"Loaded {WEIGHTS.name}, running on device={device!r}, imgsz={IMAGE_SIZE}")
+    if device == "cpu":
+        print("WARNING: CUDA GPU not available -- running on CPU, expect low fps. "
+              "Plug the laptop in / switch its GPU mode off integrated-only.")
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
-        raise SystemExit(f"Could not open camera {CAMERA_INDEX}.")
+    cap = open_camera()
+    if CAMERA_RESOLUTION:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
+    print(f"Camera resolution: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+          f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
 
     mqtt_client = None
     if not args.dry_run:
@@ -163,7 +221,8 @@ def main():
         print(f"-> {message}")
 
     pid = PID(KP, KI, KD, MAX_SPEED, INTEGRAL_LIMIT, DERIVATIVE_SMOOTHING)
-    create_gain_sliders()
+    conf_threshold = CONFIDENCE_THRESHOLD
+    create_tuning_sliders()
 
     missed_frames = 0
     speed = 0
@@ -181,18 +240,23 @@ def main():
             dt = now - prev_time
             prev_time = now
 
-            gains = read_gain_sliders()
+            gains, conf = read_tuning_sliders()
             if gains != (pid.kp, pid.ki, pid.kd):
                 pid.kp, pid.ki, pid.kd = gains
                 print(f"Gains: KP = {pid.kp:g}, KI = {pid.ki:g}, KD = {pid.kd:g}")
+            if conf != conf_threshold:
+                conf_threshold = conf
+                print(f"CONFIDENCE_THRESHOLD = {conf_threshold:.2f}")
 
-            result = model.predict(frame, conf=CONFIDENCE_THRESHOLD, device=device, verbose=False)[0]
-            box = best_detection(result)
+            raw_frame = frame.copy()  # unannotated, for 's' captures
+            result = model.predict(frame, conf=min(SHOW_CONFIDENCE_FLOOR, conf_threshold),
+                                   imgsz=IMAGE_SIZE, device=device, verbose=False)[0]
+            best, rejected = split_detections(result, conf_threshold)
 
             error = None
-            if box is not None:
+            if best is not None:
                 missed_frames = 0
-                error = horizontal_error(box, frame.shape[1])
+                error = horizontal_error(best[0], frame.shape[1])
                 output = pid.update(error, dt)
                 if abs(error) < DEADBAND:
                     speed = 0
@@ -209,10 +273,16 @@ def main():
                 last_sent_at = now
 
             fps = 0.9 * fps + 0.1 / max(dt, 1e-6)
-            draw_overlay(frame, box, error, speed, pid, fps)
-            cv2.imshow("Minifig car (q to quit)", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            draw_overlay(frame, best, rejected, error, speed, pid, conf_threshold, fps)
+            cv2.imshow("Minifig car (q quit, s save frame)", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            if key == ord("s"):
+                CAPTURE_DIR.mkdir(exist_ok=True)
+                path = CAPTURE_DIR / f"car_{time.strftime('%Y%m%d_%H%M%S')}_{int(now * 1000) % 1000:03d}.jpg"
+                cv2.imwrite(str(path), raw_frame)
+                print(f"Saved {path.name}")
     except KeyboardInterrupt:
         pass
     finally:
@@ -222,7 +292,8 @@ def main():
         if mqtt_client:
             time.sleep(0.5)  # let the stop command go out
             mqtt_client.disconnect()
-        print(f"Final gains: KP = {pid.kp:g}, KI = {pid.ki:g}, KD = {pid.kd:g}")
+        print(f"Final gains: KP = {pid.kp:g}, KI = {pid.ki:g}, KD = {pid.kd:g}, "
+              f"CONFIDENCE_THRESHOLD = {conf_threshold:.2f}")
 
 
 if __name__ == "__main__":

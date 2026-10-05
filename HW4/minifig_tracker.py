@@ -21,6 +21,7 @@ from pathlib import Path
 
 import cv2
 import torch
+from cv2_enumerate_cameras import enumerate_cameras
 from ultralytics import YOLO
 
 from mqttlib import MQTTClient
@@ -37,6 +38,13 @@ MQTT_RETRY_DELAY_SECONDS = 3
 MATRIX_COLS = 13
 MATRIX_ROWS = 8
 
+# Camera selection: the first camera whose name contains CAMERA_NAME_HINT is
+# used (the Android phone shared through Windows Phone Link shows up as
+# "<phone name> (Windows Virtual Camera)"). If no camera matches -- e.g. the
+# phone isn't connected -- CAMERA_INDEX is used instead (0 = laptop webcam).
+# Set CAMERA_NAME_HINT = None to always use CAMERA_INDEX.
+# List cameras with: python minifig_tracker.py --list-cameras
+CAMERA_NAME_HINT = "Windows Virtual Camera"
 CAMERA_INDEX = 0
 CONFIDENCE_THRESHOLD = 0.5
 MIRROR = False  # True flips left/right, if the matrix reads backwards from where you stand
@@ -61,6 +69,29 @@ def connect_mqtt(mqtt_client):
                 f"retrying in {MQTT_RETRY_DELAY_SECONDS}s..."
             )
             time.sleep(MQTT_RETRY_DELAY_SECONDS)
+
+
+def list_cameras():
+    for cam in enumerate_cameras(cv2.CAP_MSMF):
+        print(f"  [{cam.index}] {cam.name}")
+
+
+def open_camera():
+    """Open the camera matching CAMERA_NAME_HINT, falling back to CAMERA_INDEX."""
+    if CAMERA_NAME_HINT:
+        for cam in enumerate_cameras(cv2.CAP_MSMF):
+            if CAMERA_NAME_HINT.lower() in cam.name.lower():
+                cap = cv2.VideoCapture(cam.index, cam.backend)
+                if cap.isOpened():
+                    print(f"Using camera [{cam.index}] {cam.name}")
+                    return cap
+                print(f"Found '{cam.name}' but couldn't open it.")
+        print(f"No camera matching '{CAMERA_NAME_HINT}' -- falling back to camera {CAMERA_INDEX}.")
+    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_MSMF)
+    if not cap.isOpened():
+        raise SystemExit(f"Could not open camera {CAMERA_INDEX}.")
+    print(f"Using camera {CAMERA_INDEX}")
+    return cap
 
 
 def best_detection(result):
@@ -115,15 +146,17 @@ def draw_overlay(frame, box, cell, fps):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="print messages instead of publishing")
+    parser.add_argument("--list-cameras", action="store_true", help="list cameras and exit")
     args = parser.parse_args()
+    if args.list_cameras:
+        list_cameras()
+        return
 
     device = 0 if torch.cuda.is_available() else "cpu"
     model = YOLO(WEIGHTS)
     print(f"Loaded {WEIGHTS.name}, running on device={device!r}")
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
-        raise SystemExit(f"Could not open camera {CAMERA_INDEX}.")
+    cap = open_camera()
 
     mqtt_client = None
     if not args.dry_run:

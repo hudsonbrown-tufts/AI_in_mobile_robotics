@@ -29,10 +29,10 @@ It reuses the trained model, the MQTT topic and the UNO Q app pattern from the t
 ## UNO Q side
 - `python/main.py`: same structure as the tracker app. MQTT `on_message` stores the latest parsed speed under a lock, and `loop()` (via `App.run(user_loop=loop)`) forwards **every** message with `Bridge.call("set_speed", speed)`, repeats included (watchdog). `try/finally` sends `set_speed(0)` on stop. Speeds are clamped to ±100 and junk is ignored.
 - `sketch.ino`: Maker Drive, two inputs per motor: A = PWM and B = LOW → forward; A = LOW and B = PWM → reverse; both LOW → coast.
-  - Pins: `M1A=3, M1B=5, M2A=6, M2B=9`. These are PWM pins on the classic UNO layout; **not yet confirmed against the UNO Q pinout**.
-  - `INVERT_M1=false, INVERT_M2=true`, since mirror-mounted motors spin opposite ways.
+  - Pins: `M1A=3, M1B=5, M2A=6, M2B=9`. **Confirmed PWM on the UNO Q**, all at 500 Hz (ArduinoCore-zephyr `variants/arduino_uno_q_stm32u585xx` overlay: D3=TIM3_CH3, D5=TIM1_CH4, D6=TIM3_CH4, D9=TIM4_CH3; PWM also on D2, D7, D8, D10–D13, D20, D21; D0/D1 are not PWM).
+  - `INVERT_M1=true, INVERT_M2=false` (2026-10-05: user asked to reverse both motors; was false/true). Mirror-mounted motors spin opposite ways, so exactly one is inverted. Inversion only affects direction, never speed.
   - Watchdog: motors stop if there's no `set_speed` for `COMMAND_TIMEOUT_MS = 500`.
-  - The Bridge handler only stores state, and `loop()` does the `analogWrite`s (`map(|speed|, 0..100, 0..255)`).
+  - The Bridge handler only stores state, and `loop()` calls `driveBoth(speed)`, which computes ONE duty (`map(|speed|, 0..100, 0..255)`) and writes it to both motors. The user requires that the motors never run at different speeds, so don't add per-motor trims or differential steering without asking.
   - Needs a common GND between the UNO Q and the Maker Drive; motor power comes from a separate battery.
 
 ## Testing done (2026-10-01, off-hardware)
@@ -42,6 +42,26 @@ It reuses the trained model, the MQTT topic and the UNO Q app pattern from the t
 - **Not yet tested on the real car.** Suggested first run: wheels off the ground, then check `DRIVE_DIRECTION`, `INVERT_M2`, MIN_SPEED and MAX_SPEED.
 - PyTorch couldn't see the GPU during this session, so expect a lower fps on CPU. MQTT latency to the public broker plus a low fps limits how aggressive the gains can be. Raise KD or lower KP if it oscillates.
 
+## 2026-10-05: detection trouble on the real car
+The user reported the car program having trouble finding the minifig. Causes found:
+- **Dataset mismatch.** *Correction:* I first claimed the training photos were close-ups (46% median width), but that came from misreading the labels. Roboflow exported **polygon** labels (`class x1 y1 x2 y2 ...`), not `cx cy w h`, so field 3 isn't the width. Ultralytics turns the polygons into boxes, so training was fine. The true median box width is **~11%** of the image (range 2.5–30%). The real gap is the **scene**: training = the minifig alone on a bare wooden table, mostly lying down, shot from above at a phone-in-hand angle. On the car it stands upright, seen from the side, surrounded by colorful jumper wires, a pink 3D-printed frame and yellow wheels. A frame from the phone camera with the minifig clearly visible (~90 px wide at 1280×720) got **no detection at all, even at conf 0.05**, at imgsz 640 or 960.
+- **No GPU:** the RTX 3060 showed status "Unknown" in `Get-PnpDevice` (discrete GPU powered off) and the laptop was on battery, so inference ran on CPU.
+
+Changes to `minifig_car.py` (it no longer imports `CONFIDENCE_THRESHOLD` / `best_detection` from the tracker):
+- Its own `CONFIDENCE_THRESHOLD = 0.25` (was 0.5) plus a live **"Conf %"** slider (1–95). The sliders window is now "Tuning".
+- `IMAGE_SIZE = 960` passed as `imgsz` (default was 640). `CAMERA_RESOLUTION = (1280, 720)` (the webcam supports it).
+- Detections from `SHOW_CONFIDENCE_FLOOR` (0.05) up to the threshold are drawn in grey with their score. The accepted box shows its score.
+- Pressing **`s`** saves the raw frame to `HW4/captures/` (gitignored) for labeling in Roboflow and retraining.
+- A startup warning prints when running on CPU.
+- Synthetic test (test image shrunk onto a 1280×720 grey canvas): at 50% scale, confidence was 0.54 at imgsz 640 vs **0.84** at 960. At 15% scale, rejected (0.13) at 640 vs **accepted 0.39** at 960. At 25% scale there was no detection at either size, so the model itself is fragile at small scales, and **retraining with captures from the real setup is the real fix**. CPU inference at 960 took about 50 ms per frame.
+
+## 2026-10-05: Android phone as the webcam (Windows Phone Link)
+- Phone Link exposes the phone (a Pixel 10 Pro Fold) as **"Pixel 10 Pro Fold (Windows Virtual Camera)"**. Laptop webcam = "USB2.0 HD UVC WebCam" (index 0), phone = index 1 (MSMF). DirectShow also lists an "OBS Virtual Camera".
+- Added the `cv2-enumerate-cameras` package (in `.venv` and `requirements.txt`) to map camera names to OpenCV indices.
+- `minifig_tracker.py` now has `CAMERA_NAME_HINT = "Windows Virtual Camera"` + `open_camera()` (first MSMF camera whose name contains the hint, else falls back to `CAMERA_INDEX`) + `list_cameras()`. Both programs use `open_camera()` and accept `--list-cameras`. `minifig_car.py` imports `open_camera` / `list_cameras` from the tracker.
+- Verified: opens the phone at 1280×720, ~33 fps read rate. **The first frames are black** for a moment while Phone Link starts streaming, then real images arrive.
+
 ## Next steps / open questions
-- Confirm the UNO Q PWM pins and the Maker Drive model (MDD3A vs. the original Maker Drive), and update the pin constants if needed.
+- Retrain with `captures/` frames added to the Roboflow project (and consider raising the `scale` augmentation in `train_minifig.py`).
+- Confirm the Maker Drive model (MDD3A vs. the original Maker Drive).
 - Tune the gains on the real car and record the final values here.
