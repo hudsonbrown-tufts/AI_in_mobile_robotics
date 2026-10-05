@@ -1,9 +1,9 @@
 # Fine-tunes a YOLOv8 detector to find the LEGO minifigure.
 #
-# Dataset: Minifig.v1i.yolov8/ (Roboflow YOLOv8 export, class "Minifig",
-# 70 train / 20 valid / 10 test images).
+# Dataset: Minifig.v2i.yolov8/ (Roboflow YOLOv8 export, class "Minifig",
+# 101 train / 29 valid / 14 test images; v2 adds photos of the minifig on the car).
 # Training progress and the final weights land under
-# HW4/runs/detect/minifig/weights/best.pt
+# HW4/runs/detect/minifig_v2/weights/best.pt
 
 from pathlib import Path
 
@@ -12,11 +12,11 @@ import yaml
 from ultralytics import YOLO
 
 HERE = Path(__file__).parent
-DATASET_DIR = HERE / "Minifig.v1i.yolov8"
+DATASET_DIR = HERE / "Minifig.v2i.yolov8"
 EPOCHS = 100  # small dataset benefits from more epochs than the usual 50
 IMAGE_SIZE = 640
 DEVICE = 0  # first CUDA GPU (RTX 3060); falls back to CPU below if unavailable
-RUN_NAME = "minifig"
+RUN_NAME = "minifig_v2"
 
 
 def write_resolved_yaml():

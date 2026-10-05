@@ -26,6 +26,14 @@ A YOLOv8 model finds the LEGO minifig in the webcam. The computer sends the mini
 - Results: val P 0.997 / R 1.0 / mAP50 0.995 / mAP50-95 0.932; **test** P 0.994 / R 1.0 / mAP50 0.995 / mAP50-95 0.970.
 - Ultralytics also downloaded `HW4/yolov8n.pt` and the repo-root `weights/yolo26n.pt` (AMP check). Both are gitignored.
 
+## v2 model (2026-10-05)
+- The user added 44 phone photos (`PXL_20261005_*`) of the minifig **on the car** (side and top views, busy classroom background; 2 have no label, as negatives) and exported Roboflow **version 2** → `Minifig.v2i.yolov8/` (101 train / 29 valid / 14 test; same 512×512 stretch, no augmentation). The v1 folder was removed from disk (still in git history).
+- First attempt: the user re-downloaded v1 by mistake (identical files). Check `version:` in `data.yaml` and the image counts before training.
+- `train_minifig.py` now uses `DATASET_DIR = Minifig.v2i.yolov8`, `RUN_NAME = "minifig_v2"` → `runs/detect/minifig_v2/weights/best.pt`. The old `runs/detect/minifig/` model is kept for comparison. Training took ~2.6 minutes on the 3060.
+- Results: val P 0.998 / R 1.0 / mAP50 0.995 / mAP50-95 0.912; test P 0.996 / R 1.0 / mAP50 0.995 / mAP50-95 0.946.
+- **On the 13 held-out car photos** (v2 valid+test): the old model found the minifig in 3/13 at conf ≥ 0.25 and 0/13 at ≥ 0.5 (max 0.36). The new model found it in **13/13 at ≥ 0.5 (0.89–0.99)**. On the phone-camera frame where the old model found nothing, the new model scored 0.97 at imgsz 640 and 0.96 at 960.
+- `WEIGHTS` in `minifig_tracker.py` (also imported by `minifig_car.py`) now points to `minifig_v2`.
+
 ## Tracker protocol
 - Broker `test.mosquitto.org:1883`, topic **`ME193/hudson`** (the same topic as HW3's ball/goalie game).
 - `minifig:<col>,<row>` (col 0–12 left→right, row 0–7 top→bottom) or `minifig:none`. The prefix is there so HW3's `Goal` / `I lost` messages are ignored.
@@ -55,7 +63,8 @@ A YOLOv8 model finds the LEGO minifig in the webcam. The computer sends the mini
    default_profile: default
    ```
    **Root cause of both errors: the UNO Q's system date was wrong** (TLS failures). Once the user fixed the date, the app worked. Check the board's clock first for any App Lab download/import error.
-3. There is no alternative to Bridge for MPU↔MCU communication. Don't open `Serial1` / `/dev/ttyHS1` directly.
+3. **2026-10-05: link errors after the board's platform update.** The board moved to `arduino:zephyr` **1.0.0** (toolchain `arm-zephyr-eabi 1.0.1`; App Lab now fetches `Arduino_RouterBridge 0.4.3` / `Arduino_RPClite 0.3.1` "from sketch project"). The build failed at link time: `cannot find entry symbol main` and undefined `arduino::String::*`, `Serial2`, `operator new(unsigned, void*)`, `_exit`. The core itself wasn't being linked. The board ID (`unoq`) is unchanged in 1.0.0, and both libraries are at their latest versions. No public issue found. Fix attempted (not yet confirmed): the tracker's `sketch.yaml` was reset to match the current official examples exactly (no `fqbn`, no `libraries`); the clock fix makes the old library pins unnecessary. If it still fails: run App Lab's board update / restart, and test an official Bridge example (e.g. LED Matrix Frame). If that fails too, the platform install is broken, not our app. The car app's `sketch.yaml` still has the old pins; change it the same way if it hits this.
+4. There is no alternative to Bridge for MPU↔MCU communication. Don't open `Serial1` / `/dev/ttyHS1` directly.
 
 ## Rebuilding the App Lab zip
 ```python

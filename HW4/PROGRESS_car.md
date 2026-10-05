@@ -61,7 +61,12 @@ Changes to `minifig_car.py` (it no longer imports `CONFIDENCE_THRESHOLD` / `best
 - `minifig_tracker.py` now has `CAMERA_NAME_HINT = "Windows Virtual Camera"` + `open_camera()` (first MSMF camera whose name contains the hint, else falls back to `CAMERA_INDEX`) + `list_cameras()`. Both programs use `open_camera()` and accept `--list-cameras`. `minifig_car.py` imports `open_camera` / `list_cameras` from the tracker.
 - Verified: opens the phone at 1280×720, ~33 fps read rate. **The first frames are black** for a moment while Phone Link starts streaming, then real images arrive.
 
+## 2026-10-05: retrained (v2 model)
+- Retrained with 44 new photos of the minifig on the car (details in PROGRESS_tracker.md). The new model detects it in 13/13 held-out car photos at 0.89–0.99 confidence (old model: max 0.36), and at 0.97 on the phone-camera frame that previously got nothing.
+- The user set `DRIVE_DIRECTION = -1` in `minifig_car.py` (on top of reversing both motors in the sketch).
+- With the new model's high scores, `CONFIDENCE_THRESHOLD = 0.25` may let false positives through. The user can raise it with the slider if the car chases something else. `IMAGE_SIZE = 960` isn't needed for this model (640 scored the same on the phone frame) and 640 would be faster; both are left as is for now.
+
 ## Next steps / open questions
-- Retrain with `captures/` frames added to the Roboflow project (and consider raising the `scale` augmentation in `train_minifig.py`).
+- Tune the PID on the real car with the v2 model.
 - Confirm the Maker Drive model (MDD3A vs. the original Maker Drive).
 - Tune the gains on the real car and record the final values here.

@@ -27,7 +27,7 @@ from ultralytics import YOLO
 from mqttlib import MQTTClient
 
 HERE = Path(__file__).parent
-WEIGHTS = HERE / "runs" / "detect" / "minifig" / "weights" / "best.pt"
+WEIGHTS = HERE / "runs" / "detect" / "minifig_v2" / "weights" / "best.pt"  # v2: trained with photos of the minifig on the car
 
 MQTT_TOPIC = "ME193/hudson"
 MESSAGE_PREFIX = "minifig:"

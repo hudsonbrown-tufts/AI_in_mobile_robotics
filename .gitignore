@@ -39,7 +39,7 @@ Desktop.ini
 *.cache
 HW4/yolov8n.pt
 /weights/
-HW4/Minifig.v1i.yolov8/data_resolved.yaml
+HW4/*/data_resolved.yaml
 HW4/runs/detect/*/weights/last.pt
 HW4/*.zip
 HW4/captures/

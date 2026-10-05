@@ -37,10 +37,10 @@ MESSAGE_PREFIX = "car:"
 # --- Detection ---------------------------------------------------------------
 # Minimum model confidence to accept a detection. Lower finds the minifig more
 # often (especially small / far away) but risks locking onto look-alikes.
-CONFIDENCE_THRESHOLD = 0.25
+CONFIDENCE_THRESHOLD = 0.75
 # Detections down to this confidence are drawn in grey with their score, so you
 # can see what the model almost found and pick a good threshold.
-SHOW_CONFIDENCE_FLOOR = 0.05
+SHOW_CONFIDENCE_FLOOR = 0.25
 # Model input size. The training photos were close-ups; a minifig across the
 # room is only a few pixels wide, and a bigger input size helps the model see
 # it (try 960 or 1280). Larger = slower, especially without the GPU.
