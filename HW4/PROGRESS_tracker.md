@@ -10,8 +10,8 @@ A YOLOv8 model finds the LEGO minifig in the webcam. The computer sends the mini
 | `runs/detect/minifig/weights/best.pt` | Trained model (committed; `last.pt` is gitignored) |
 | [minifig_tracker.py](minifig_tracker.py) | Computer side: webcam → YOLO → matrix cell → MQTT |
 | [mqttlib.py](mqttlib.py) | Copy of HW3's paho-mqtt wrapper |
-| [uno_q_app/](uno_q_app/) | UNO Q App Lab app (`app.yaml`, `python/main.py`, `python/requirements.txt`, `sketch/sketch.ino`, `sketch/sketch.yaml`) |
-| `minifig_tracker_app.zip` | Zip of `uno_q_app/` for App Lab import (gitignored; rebuild it, see below) |
+| [minifig-light-tracker/](minifig-light-tracker/) | UNO Q App Lab app (`app.yaml`, `python/main.py`, `python/requirements.txt`, `sketch/sketch.ino`, `sketch/sketch.yaml`) |
+| `minifig_tracker_app.zip` | Zip of `minifig-light-tracker/` for App Lab import (gitignored; rebuild it, see below) |
 
 ## Environment
 - Windows 11 laptop with an **RTX 3060 Laptop GPU (6 GB)** and an AMD integrated GPU. WMI lists only the AMD/Parsec adapters, and `nvidia-smi` fails with a permissions error, but CUDA works.
@@ -69,7 +69,7 @@ A YOLOv8 model finds the LEGO minifig in the webcam. The computer sends the mini
 ## Rebuilding the App Lab zip
 ```python
 import zipfile; from pathlib import Path
-src = Path("uno_q_app")
+src = Path("minifig-light-tracker")
 with zipfile.ZipFile("minifig_tracker_app.zip", "w", zipfile.ZIP_DEFLATED) as z:
     for p in sorted(src.rglob("*")):
         if p.is_file() and "__pycache__" not in p.parts:

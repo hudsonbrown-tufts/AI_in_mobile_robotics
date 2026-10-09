@@ -1,4 +1,4 @@
-name: Minifig Tracker
+name: Minifig Light Tracker
 description: "Lights one pixel on the LED matrix where the minifig is in the computer's camera frame (positions arrive over MQTT)."
 icon: 🟩
 version: "1.0.0"

@@ -29,7 +29,8 @@ htmlcov/
 .env.local
 
 # Editors & OS
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .idea/
 Thumbs.db
 Desktop.ini
@@ -43,3 +44,6 @@ HW4/*/data_resolved.yaml
 HW4/runs/detect/*/weights/last.pt
 HW4/*.zip
 HW4/captures/
+
+# UNO Q deploy tools: this board's address stays on this laptop
+tools/board_secrets.py

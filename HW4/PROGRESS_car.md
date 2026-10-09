@@ -8,8 +8,8 @@ It reuses the trained model, the MQTT topic and the UNO Q app pattern from the t
 | File | Role |
 |---|---|
 | [minifig_car.py](minifig_car.py) | Computer side: webcam → YOLO → error → PID → `car:<speed>` over MQTT |
-| [uno_q_car_app/](uno_q_car_app/) | UNO Q App Lab app: `app.yaml`, `python/main.py`, `python/requirements.txt` (paho-mqtt), `sketch/sketch.ino`, `sketch/sketch.yaml` (copied from the working tracker app) |
-| `minifig_car_app.zip` | Zip of `uno_q_car_app/` for App Lab import (gitignored; rebuild with the same snippet as in PROGRESS_tracker.md, `src = Path("uno_q_car_app")`) |
+| [minifig-car-tracker/](minifig-car-tracker/) | UNO Q App Lab app: `app.yaml`, `python/main.py`, `python/requirements.txt` (paho-mqtt), `sketch/sketch.ino`, `sketch/sketch.yaml` (copied from the working tracker app) |
+| `minifig_car_app.zip` | Zip of `minifig-car-tracker/` for App Lab import (gitignored; rebuild with the same snippet as in PROGRESS_tracker.md, `src = Path("minifig-car-tracker")`) |
 
 ## Protocol
 - Same broker/topic as the tracker and HW3: `test.mosquitto.org:1883`, **`ME193/hudson`**.
