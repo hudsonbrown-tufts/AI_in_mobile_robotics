@@ -1,8 +1,8 @@
 """Use the LEGO Double Motor as a Wii Remote in the Dolphin emulator (Wii Sports).
 
     LEGO hub IMU ----------------------> Wii Remote accelerometer / gyro (real motion)
-    motor shafts (turned by hand) -----> B (left shaft, the "trigger") and A (right shaft)
-    phone camera + pose: right wrist --> Wii pointer
+    motor shafts (turned >15 deg) -----> one click of A (your left shaft) or B (your right), either way
+    AprilTag taped to the hub's front -> Wii pointer (your right wrist if the tag isn't seen)
     pose: left-hand gestures ----------> A, HOME, D-pad left/right
     keyboard (this window) ------------> every button, as a backup
 
@@ -17,9 +17,12 @@ Usage:
     python wii_remote.py --no-camera     # motion + shaft buttons + keyboard only
     python wii_remote.py --no-motor      # pointer + gestures + keyboard only (motion = resting remote)
     python wii_remote.py --buzz          # buzz the hub after each swing (shakes the motion data a little)
+    python wii_remote.py --pointer wrist # use the right wrist as the pointer instead of the tag
 
 Keys (with this window focused):
     A / Enter = A    B / Space = B    1, 2    = (+)    - (minus)    H = HOME    arrows = D-pad
+    P = recenter the pointer (hold the remote where the screen's middle should be)
+    F = flip the swings front/back (if you hold the remote the other way round; remembered)
     C = recalibrate axes   G = gestures on/off   Q / Esc = quit   (in --map: N / P = next / previous)
 """
 
@@ -32,12 +35,14 @@ import pygame
 import _paths  # noqa: F401
 from dsu_server import PORT, DSUServer, PadState
 from gestures import L_SHOULDER, L_WRIST, R_SHOULDER, R_WRIST, Gestures
-from hub import STILL_S, TIP_MIN_ANGLE, Hub, angle_deg, wiimote_to_dsu
+from hub import SHAFT_BUTTONS, SHAFT_MODE, STILL_S, TIP_MIN_ANGLE, Hub, angle_deg, wiimote_to_dsu
+from tag_pointer import TagPointer
 
 WIDTH, HEIGHT = 960, 600
 NEUTRAL_ACCEL = (0.0, 0.0, 1.0)        # remote lying flat, in g (Wii Remote frame)
 SWING_BUZZ_DPS = 500.0                 # --buzz: a swing peaks above this...
 SWING_BUZZ_END_DPS = 200.0             # ...and buzzes once it slows below this
+WRIST_FALLBACK_S = 1.0                 # tag out of sight this long -> the right wrist points instead
 
 KEY_BUTTONS = {
     pygame.K_a: "A", pygame.K_RETURN: "A", pygame.K_b: "B", pygame.K_SPACE: "B",
@@ -74,6 +79,8 @@ class App:
         self.args = args
         self.server = DSUServer(port=args.port).start()
         self.hub = None if args.no_motor else Hub().start()
+        if self.hub and args.log:
+            self.hub.start_log(args.log)
         self.vision = None
         if not args.no_camera:
             from vision import DISPLAY_SIZE, Vision
@@ -88,6 +95,9 @@ class App:
         self.cal_message = ""
         self.swing_peak = 0.0
         self.sources = {}          # button -> where it came from (for the display)
+        self.tag_pointer = TagPointer()
+        self.tag_seen_t = -1e9
+        self.pointer_source = None
 
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -117,6 +127,7 @@ class App:
                 vis = self.vision.result if self.vision else None
                 fresh = vis is not None and now - vis.t < 0.5
                 self.gestures.update(vis.landmarks if fresh else None, now)
+                self.tag_pointer.update(vis if fresh else None, now)
                 self.step_calibration(now)
                 self.server.set_state(self.map_state(now) if self.mode == "MAP" else self.play_state(now))
                 self.draw(vis if fresh else None, now)
@@ -136,6 +147,11 @@ class App:
             self.set_mode("CAL_FLAT")
         elif key == pygame.K_g:
             self.gestures.enabled = not self.gestures.enabled
+        elif key == pygame.K_p and self.mode != "MAP":
+            self.tag_pointer.recenter()
+        elif key == pygame.K_f and self.hub:
+            flipped = self.hub.toggle_flip()
+            print(f"[hub] motion {'flipped (remote held backwards)' if flipped else 'normal'}")
         elif self.mode == "MAP" and key in (pygame.K_n, pygame.K_TAB):
             self.map_index = (self.map_index + 1) % len(MAP_ITEMS)
             self.mode_t = time.monotonic()
@@ -170,6 +186,18 @@ class App:
 
     # ---------------- controller state ----------------
 
+    def pointer(self, now):
+        """(x, y) for the Wii pointer and where it came from: the tag, else the wrist."""
+        if self.args.pointer == "tag":
+            if self.tag_pointer.pointer is not None:
+                self.tag_seen_t = now
+                return self.tag_pointer.pointer, "tag"
+            if now - self.tag_seen_t < WRIST_FALLBACK_S:
+                return None, None          # tag just blinked out: don't jump to the wrist
+        if self.gestures.pointer is not None:
+            return self.gestures.pointer, "wrist"
+        return None, None
+
     def play_state(self, now):
         keys = pygame.key.get_pressed()
         self.sources = {}
@@ -189,7 +217,9 @@ class App:
             if self.args.buzz:
                 self.buzz_after_swing(math.sqrt(sum(c * c for c in gyro)))
         dsu_accel, dsu_gyro = wiimote_to_dsu(accel, gyro)
-        return PadState(buttons=set(self.sources), right_stick=self.gestures.pointer or (0.0, 0.0),
+        point, self.pointer_source = self.pointer(now)
+        self.pointer_xy = point
+        return PadState(buttons=set(self.sources), right_stick=point or (0.0, 0.0),
                         accel=dsu_accel, gyro=dsu_gyro, motion_t=motion_t)
 
     def buzz_after_swing(self, dps):
@@ -235,7 +265,7 @@ class App:
         self.draw_status()
         self.draw_prompt(now)
         self.text("Keys: A/Enter=A  B/Space=B  1 2  = +  - -  H=Home  arrows=D-pad  |  "
-                  "C recalibrate  G gestures  Q quit", self.font_s, DIM, (14, HEIGHT - 24))
+                  "P recenter  F flip  C recal  G gestures  Q quit", self.font_s, DIM, (14, HEIGHT - 24))
 
     def draw_camera(self, vis):
         rect = pygame.Rect(10, 10, 512, 288)
@@ -256,14 +286,24 @@ class App:
             pygame.draw.circle(self.screen, LIT, to_px(lm[R_WRIST]), 12, 3)
         if L_WRIST in lm:
             pygame.draw.circle(self.screen, WARN if self.gestures.buttons else DIM, to_px(lm[L_WRIST]), 10, 3)
+        if vis.tag_corners:
+            pts = [to_px(c) for c in vis.tag_corners]
+            pygame.draw.polygon(self.screen, GOOD, pts, 3)
+            cx = sum(x for x, _ in pts) // 4
+            cy = sum(y for _, y in pts) // 4
+            pygame.draw.circle(self.screen, GOOD, (cx, cy), 4)
+            self.text(f"tag {vis.tag_id}", self.font_s, GOOD, (pts[0][0], pts[0][1] - 18))
 
     def draw_pointer_screen(self):
         rect = pygame.Rect(540, 10, 410, 231)
         pygame.draw.rect(self.screen, PANEL, rect, border_radius=8)
-        self.text("Wii pointer (right wrist)", self.font_s, DIM, (rect.x + 8, rect.y + 6))
-        p = self.gestures.pointer
+        p, src = getattr(self, "pointer_xy", None), self.pointer_source
+        label = {"tag": "AprilTag on the remote", "wrist": "right wrist (tag not seen)"}.get(src, "")
+        self.text(f"Wii pointer: {label}   (P = recenter)", self.font_s, DIM, (rect.x + 8, rect.y + 6))
         if p is None:
-            self.text("no right wrist in view", self.font_s, DIM, rect.center, center=True)
+            msg = ("show the tag on the remote to the camera" if self.args.pointer == "tag"
+                   else "no right wrist in view")
+            self.text(msg, self.font_s, DIM, rect.center, center=True)
             return
         x = rect.centerx + p[0] * (rect.w / 2 - 12)
         y = rect.centery - p[1] * (rect.h / 2 - 12)
@@ -317,14 +357,22 @@ class App:
             ok = self.hub.connected
             line("LEGO hub", f"connected  {self.hub.sample_rate:.0f} Hz" if ok else self.hub.status, ok)
             cal = self.hub.calibration
-            line("Axes", self.cal_message or ("calibrated (C to redo)" if cal else "not calibrated"), bool(cal))
+            axes = self.cal_message or ("calibrated (C to redo)" if cal else "not calibrated")
+            if cal:
+                axes += "   F: swings " + ("FLIPPED (held backwards)" if self.hub.flipped else "normal")
+            line("Axes", axes, bool(cal))
             offs = self.hub.shaft_offsets
-            shafts = "  ".join(f"{n} {offs.get(i, float('nan')):+.0f} deg"
-                               for i, n in sorted(((0, "B"), (1, "A"))))
+            shafts = "  ".join(f"{n} shaft {offs.get(i, float('nan')):+.0f} deg"
+                               for i, n in sorted(SHAFT_BUTTONS.items(), key=lambda kv: kv[1]))
+            shafts += "  (click)" if SHAFT_MODE == "click" else "  (hold)"
             line("Shafts", shafts, ok)
         else:
             line("LEGO hub", "off (--no-motor)", False)
-        line("Pose", ("pointer + gestures" if self.gestures.enabled else "pointer only (G = gestures on)")
+        tp = self.tag_pointer
+        if self.args.pointer == "tag":
+            line("Pointer tag", f"tag {tp.tag_id} in view" if tp.visible
+                 else "not seen (wrist takes over after 1 s)", tp.visible)
+        line("Pose", ("gestures on" if self.gestures.enabled else "gestures off (G)")
              if self.gestures.pointer else "no body in view", self.gestures.pointer is not None)
 
     def draw_prompt(self, now):
@@ -360,6 +408,10 @@ def main():
     parser.add_argument("--no-camera", action="store_true")
     parser.add_argument("--no-motor", action="store_true")
     parser.add_argument("--buzz", action="store_true", help="buzz the hub after each swing")
+    parser.add_argument("--log", nargs="?", const=str(__import__("pathlib").Path(__file__).with_name("swing_log.csv")),
+                        help="record the IMU stream to a CSV (default wii/swing_log.csv) to diagnose swings")
+    parser.add_argument("--pointer", choices=["tag", "wrist"], default="tag",
+                        help="what drives the Wii pointer (default: the AprilTag on the remote)")
     parser.add_argument("--port", type=int, default=PORT, help="DSU server port (Dolphin default 26760)")
     App(parser.parse_args()).run()
 

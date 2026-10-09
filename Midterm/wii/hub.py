@@ -33,6 +33,11 @@ from paddle_imu import HAPTICS, STILL_W, connect
 CALIBRATION_PATH = Path(__file__).with_name("wii_calibration.json")
 
 POLL_S = 0.003
+# The hub's data rate. The library default (100 ms) gives only ~9 samples/s: a recorded
+# 50 s session had 1-9 samples per swing, too few for Wii Sports to see a swing's shape (it
+# read everything as backhands). 15 ms (~66 Hz) is the fastest the hub accepts; a real
+# Wii Remote sends 100 Hz.
+NOTIFICATION_MS = 15
 STILL_S = 1.0                  # hold each calibration pose still this long
 SETUP_READ_S = 1.0             # ...counted from this long after the step starts
 TIP_MIN_ANGLE = 60.0           # pose 2 must be at least this far from pose 1 (degrees)
@@ -42,10 +47,19 @@ TIP_MIN_ANGLE = 60.0           # pose 2 must be at least this far from pose 1 (d
 ACCEL_SIGN = 1
 
 # --- Shaft buttons ---
-SHAFT_BUTTONS = {le.MOTOR_LEFT: "B", le.MOTOR_RIGHT: "A"}   # left shaft = trigger B, right = A
-SHAFT_PRESS_DEG = 15.0         # turned this far from rest = pressed
-SHAFT_RELEASE_DEG = 7.0        # back within this = released
-SHAFT_STUCK_S = 6.0            # held this long without moving = treat as the new rest (auto-release)
+# The motor is held "backwards" (its front, with the pointer tag, faces the screen), so the
+# hub's LEFT motor is on your RIGHT. These are the hub's motor names -> buttons:
+SHAFT_BUTTONS = {le.MOTOR_LEFT: "B", le.MOTOR_RIGHT: "A"}   # = your left shaft A, your right shaft B
+SHAFT_PRESS_DEG = 15.0         # turned this far from rest, EITHER direction = a press
+# "click": each turn past SHAFT_PRESS_DEG sends ONE short press (default).
+# "hold":  the button stays down while the shaft stays turned (needed for bowling's B, unless
+#          you hold B with the Space key instead).
+SHAFT_MODE = "click"
+SHAFT_CLICK_S = 0.12           # click: how long the button is down
+SHAFT_CLICK_SETTLE_S = 0.35    # click: after a click the rest point follows the shaft this long,
+                               # so the rest of the same turn doesn't click again
+SHAFT_RELEASE_DEG = 7.0        # hold: back within this = released
+SHAFT_STUCK_S = 6.0            # hold: left turned this long without moving = its new rest (auto-release)
 
 
 def vadd(a, b): return [x + y for x, y in zip(a, b)]
@@ -90,8 +104,11 @@ class Hub:
         self._last_t = None
         self._rest = {}
         self._pressed_since = {}
+        self._click_until = {}
+        self._settle_until = {}
         self._haptic_until = 0.0
         self._stop = threading.Event()
+        self._log = None                       # open CSV file while recording (--log)
 
     # ---------------- lifecycle ----------------
 
@@ -105,6 +122,8 @@ class Hub:
 
     def close(self):
         self._stop.set()
+        if self._log is not None:
+            self._log.close()
         if self.motor is not None:
             try:
                 self.motor.movement_stop()
@@ -112,9 +131,16 @@ class Hub:
             except Exception:
                 pass
 
+    def start_log(self, path):
+        """Record every IMU sample (raw and Wii-frame) to a CSV, for checking swings offline."""
+        self._log = open(path, "w", buffering=1, encoding="utf-8")
+        self._log.write("t,ax_raw,ay_raw,az_raw,gx_raw,gy_raw,gz_raw,"
+                        "acc_left_g,acc_back_g,acc_up_g,gyro_left_dps,gyro_back_dps,gyro_up_dps,flipped\n")
+        print(f"[hub] recording IMU to {path}")
+
     def _run(self):
         try:
-            self.motor = connect()
+            self.motor = connect(notification_ms=NOTIFICATION_MS)
         except Exception as exc:
             self.status = f"not connected ({exc})"
             print(f"[hub] {self.status}")
@@ -159,9 +185,17 @@ class Hub:
             cal = self.calibration
             if cal is not None:
                 rows = cal["rows"]
-                self.accel = tuple(vdot(r, a) / cal["g_raw"] for r in rows)
-                self.gyro = tuple(vdot(r, g) * cal["gyro_scale"] for r in rows)
+                accel = [vdot(r, a) / cal["g_raw"] for r in rows]
+                gyro = [vdot(r, g) * cal["gyro_scale"] for r in rows]
+                if self.flipped:
+                    # Remote held the other way round: turned 180 degrees about "up", so its
+                    # left/right and forward/back swap sign (for accel and gyro alike).
+                    accel[0], accel[1], gyro[0], gyro[1] = -accel[0], -accel[1], -gyro[0], -gyro[1]
+                self.accel, self.gyro = tuple(accel), tuple(gyro)
             self.motion_t = now
+            if self._log is not None:
+                self._log.write(",".join(f"{v:.4f}" for v in (now, *a, *g, *self.accel, *self.gyro))
+                                + f",{int(self.flipped)}\n")
 
     def _update_shafts(self, now):
         pressed = set()
@@ -175,6 +209,16 @@ class Hub:
             rest = self._rest.setdefault(idx, pos)
             off = pos - rest
             self.shaft_offsets[idx] = off
+            if SHAFT_MODE == "click":
+                if now < self._settle_until.get(idx, 0.0):
+                    self._rest[idx] = pos            # still finishing the turn that just clicked
+                elif abs(off) >= SHAFT_PRESS_DEG:
+                    self._click_until[idx] = now + SHAFT_CLICK_S
+                    self._settle_until[idx] = now + SHAFT_CLICK_SETTLE_S
+                    self._rest[idx] = pos            # the next click needs another full turn
+                if now < self._click_until.get(idx, 0.0):
+                    pressed.add(name)
+                continue
             if idx in self._pressed_since:
                 if abs(off) <= SHAFT_RELEASE_DEG:
                     del self._pressed_since[idx]
@@ -227,10 +271,23 @@ class Hub:
         # The tip turned the remote ~90 degrees; the gyro's raw integral over it gives its units.
         turned = vnorm(gyro_integral)
         gyro_scale = snap_scale(tip_angle / turned) if turned > 0 else 1.0
-        self.calibration = {"rows": [left, back, up], "g_raw": g_raw * ACCEL_SIGN,
+        keep_flip = self.flipped
+        self.calibration = {"rows": [left, back, up], "g_raw": g_raw * ACCEL_SIGN, "flipped": keep_flip,
                             "gyro_scale": gyro_scale, "tip_angle": tip_angle, "gyro_raw_turned": turned}
         self._save()
         return self.calibration
+
+    @property
+    def flipped(self):
+        return bool(self.calibration and self.calibration.get("flipped"))
+
+    def toggle_flip(self):
+        """Swap front/back of the motion (holding the remote backwards). Saved with the calibration."""
+        if self.calibration is None:
+            return False
+        self.calibration["flipped"] = not self.flipped
+        self._save()
+        return self.flipped
 
     def _load(self):
         try:
@@ -270,7 +327,10 @@ class Hub:
 # so the inverse below makes "Accel Up" etc. in Dolphin match the real remote.
 # If Dolphin's Motion Input preview moves the wrong way, flip a sign here --
 # or skip the question entirely with `python wii_remote.py --map`.
-DSU_ACCEL_SIGNS = (1, 1, 1)
+# Left/right flipped (2026-10-09). A 38 Hz recording showed real forehands pushing strongly
+# LEFT in our (physically checked) Wii frame, yet Wii Sports read every swing as a backhand,
+# i.e. Dolphin saw them pushing RIGHT. So Dolphin's DSU x axis is the mirror of the guess above.
+DSU_ACCEL_SIGNS = (-1, 1, 1)
 DSU_GYRO_SIGNS = (1, 1, 1)
 
 

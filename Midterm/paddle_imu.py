@@ -105,9 +105,15 @@ HAPTICS = {
 }
 
 
-def connect():
+def connect(notification_ms=None):
+    """notification_ms: how often the hub sends its IMU/motor data (library default 100 ms
+    = ~10 Hz; the hub allows 15-1000 ms). The ping pong game keeps the default."""
     motor = le.DoubleMotor()
-    motor.connect(card_color=CARD_COLOR, card_serial=CARD_SERIAL)
+    if notification_ms is None:
+        motor.connect(card_color=CARD_COLOR, card_serial=CARD_SERIAL)
+    else:
+        motor.connect(card_color=CARD_COLOR, card_serial=CARD_SERIAL,
+                      device_notification_delay=notification_ms)
     if not motor.connected:
         raise RuntimeError("Could not connect to the Double Motor "
                            f"(card {CARD_SERIAL}). Is it on and broadcasting?")
