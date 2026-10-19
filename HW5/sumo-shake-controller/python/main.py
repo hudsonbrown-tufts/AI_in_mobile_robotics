@@ -15,7 +15,7 @@ BROKER = "test.mosquitto.org"
 PORT = 1883
 MQTT_TOPIC = "ME193/hudson"
 MESSAGE_PREFIX = "shake:"
-PUBLISH_PERIOD_S = 0.1      # 10 Hz is plenty: the robot smooths it anyway
+PUBLISH_PERIOD_S = 0.05     # 20 Hz: aggression follows the shaking quickly
 PRINT_PERIOD_S = 1.0
 
 _last_print = 0.0

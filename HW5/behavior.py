@@ -8,7 +8,7 @@ Every control tick, top to bottom, the first check that says yes decides:
     5 on the tape / about to -> EDGE_ESCAPE (brake, back off, turn to center or spin 135)
     6 being pushed           -> PUSHED_SLIP (near edge) / PUSHED_BACK
     7 camera lost our tags   -> BLIND
-    8 shake < 0.15           -> DEFENSE_HOME / DEFENSE_FACE / DEFENSE_HOLD (stay still at the center)
+    8 shake < 0.5            -> DEFENSE_HOME / DEFENSE_FACE / DEFENSE_HOLD (stay still at the center)
     9 otherwise              -> ATTACK_SEARCH / ATTACK_CHARGE / ATTACK_AIM
 Then every moving output goes through the edge speed limiter and the speed ramp: commands
 stay at CRUISE_SPEED or below unless the opponent is resisting us (touching, and our wheels
@@ -91,6 +91,13 @@ def pushing_ahead(st):
     return ahead and gap < 2 * config.PUSH_CONTACT_GAP
 
 
+def pushing_out(st):
+    """Shoving the opponent toward the tape: our front is on it and it is further out than us."""
+    if not pushing_ahead(st) or st.r > config.PUSH_OUT_MAX_R:
+        return False
+    return math.hypot(st.opp[0], st.opp[1]) > st.r + config.PUSH_OUT_MARGIN
+
+
 def limit_speed(st, left, right, drive):
     """Edge speed limiter, applied to every moving command.
 
@@ -107,14 +114,16 @@ def limit_speed(st, left, right, drive):
         hx, hy = st.heading
         sign = 1 if v > 0 else -1
         end = (st.x + sign * st.length / 2 * hx, st.y + sign * st.length / 2 * hy)
-        dist = ray_to_circle(end, (sign * hx, sign * hy), 1.0 - config.STOP_MARGIN)
+        # pushing the opponent out: our front may go a little past the tape
+        stop_r = config.PUSH_OUT_NOSE_R if (sign > 0 and st.pushing_out) else 1.0 - config.STOP_MARGIN
+        dist = ray_to_circle(end, (sign * hx, sign * hy), stop_r)
         ring_per_s_per_pct = drive["wheel_dps_per_pct"] * drive["ring_per_wheel_deg"]
         # An arc that is swinging us inward has more room than the straight line (sideways at
         # the tape, a straight line hits it at once but the arc is how we get away).
         omega = 2 * w * ring_per_s_per_pct / max(drive["track_ring"], 1e-6)
         th2 = st.theta + omega * config.LIMIT_TURN_LOOKAHEAD_S
         d2 = (sign * math.cos(th2), sign * math.sin(th2))
-        dist = max(dist, ray_to_circle(end, d2, 1.0 - config.STOP_MARGIN))
+        dist = max(dist, ray_to_circle(end, d2, stop_r))
         cap = allowed_speed(dist) / max(ring_per_s_per_pct, 1e-6)
         if cap < 4:
             cap = 0.0
@@ -243,8 +252,9 @@ class Behavior:
                 return Command(out[0], out[1], "EDGE_ESCAPE", out[2])
             self.escape = None
 
-        # 5. nose on the tape, or about to reach it
-        if st.color == BLUE or st.edge_risk > config.EDGE_ESCAPE_RISK:
+        # 5. nose on the tape, or about to reach it (not while shoving the opponent out: then the
+        #    limiter lets our front go PUSH_OUT_NOSE_R and no further)
+        if (st.color == BLUE or st.edge_risk > config.EDGE_ESCAPE_RISK) and not st.pushing_out:
             end = "front" if st.color == BLUE else st.edge_end
             self.start_escape(now, end, st, color_front=st.color == BLUE)
             out = self.escape.step(now, st)
@@ -409,6 +419,7 @@ class Brain:
         self.behavior = Behavior()
         self.ramp = SpeedRamp()
         self._last_step_t = None
+        self.push_out_until = -1e9
         self.lock = threading.Lock()
         self.match = "idle"            # idle -> countdown -> running -> lost
         self.countdown_until = None
@@ -434,11 +445,13 @@ class Brain:
         self.fusion.lose.reset()
         self.behavior.reset()
         self.ramp.reset()
+        self.push_out_until = -1e9
 
     def reflex(self, now, color_label):
         """Fast edge reflex. Returns a (left, right) command to send right now, or None."""
         with self.lock:
-            if (self.match == "running" and color_label == BLUE and self.behavior.escape is None):
+            if (self.match == "running" and color_label == BLUE and self.behavior.escape is None
+                    and not self.fusion.state.pushing_out):
                 self.behavior.start_escape(now, "front", self.fusion.state, color_front=True)
                 s = -config.REFLEX_REVERSE_SPEED          # reverse at once: stops faster than braking
                 return (s, s)
@@ -450,6 +463,11 @@ class Brain:
             dt = 0.0 if self._last_step_t is None else clip(now - self._last_step_t, 0.0, 0.2)
             self._last_step_t = now
             cap = self.ramp.step(now, dt, st, (snap.cmd_left, snap.cmd_right), self.drive)
+            if pushing_out(st):
+                self.push_out_until = now + config.PUSH_OUT_HOLD_S
+            st.pushing_out = (now < self.push_out_until and st.r <= config.PUSH_OUT_MAX_R
+                              and st.opp is not None and self.match == "running")
+            self.fusion.pushing_out = st.pushing_out
             events = []
             # 1. waiting for the match to start
             if self.match == "idle":

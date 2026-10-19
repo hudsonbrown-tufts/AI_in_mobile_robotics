@@ -12,7 +12,7 @@
 //     between samples and the accelerometer slowly pulls it back, so tilting or
 //     turning the board isn't counted as shaking.
 //   - dynamic accel = |accel - gravity|, rotational shake = |gyro|
-//   - raw = rms(dynamic accel) + rms(gyro) / GYRO_PER_G, over ~0.4 s
+//   - raw = rms(dynamic accel) + rms(gyro) / GYRO_PER_G, over ~0.2 s
 //   - envelope: fast attack, slow release, so the robot doesn't flip between
 //     attack and defense between strokes of a shake
 //
@@ -28,12 +28,12 @@ const float ACCEL_LSB_PER_G = 4096.0f;       // +-8 g range
 const float GYRO_LSB_PER_DPS = 32.8f;        // +-1000 deg/s range
 
 const float GRAVITY_BLEND = 0.02f;           // how fast the accelerometer corrects the gravity estimate
-const float RMS_TAU_S = 0.4f;
+const float RMS_TAU_S = 0.2f;
 const float GYRO_PER_G = 500.0f;             // 500 deg/s of rotation counts like 1 g of shaking
 const float REST_LEVEL = 0.06f;              // noise / hand tremor below this = still
 const float SHAKE_MAX = 1.8f;                // raw level that counts as full aggression (tune by hand)
 const float ATTACK_TAU_S = 0.10f;
-const float RELEASE_TAU_S = 1.0f;
+const float RELEASE_TAU_S = 0.4f;            // was 1.0: stopping the shake now shows within ~0.5 s
 
 volatile float shakeOut = 0.0f;              // read by the Bridge handler
 volatile bool sensorOk = false;

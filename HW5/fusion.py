@@ -319,6 +319,7 @@ class FusedState:
     lost: bool = False
     lose_votes: dict = field(default_factory=dict)
     drive_warning: str = None
+    pushing_out: bool = False       # set by the Brain: shoving the opponent out (tape rules relaxed)
     our_radius: float = 0.2
     length: float = 0.4
 
@@ -578,6 +579,7 @@ class Fusion:
         self.opp = OpponentTracker()
         self.push = PushDetector()
         self.lose = LoseDetector()
+        self.pushing_out = False             # the Brain's flag from the last tick
         self.aggression = Aggression()
         self.drive_check = DriveCheck()
         self.state = FusedState()
@@ -659,7 +661,9 @@ class Fusion:
         nose = (st.x + hx * g.length / 2, st.y + hy * g.length / 2)
         nose_r = math.hypot(*nose)
         nose_outward = nose_r > 1e-6 and (st.vel[0] * nose[0] + st.vel[1] * nose[1]) > 0
-        st.lost = self.lose.step(now, self._cam_out, cam_fresh, st, st.color, st.v > 0.05, nose_outward, nose_r)
+        # Pushing the opponent out takes our color sensor over the tape on purpose: that isn't us leaving.
+        st.lost = self.lose.step(now, self._cam_out, cam_fresh, st, st.color, st.v > 0.05,
+                                 nose_outward and not self.pushing_out, nose_r)
         st.lose_votes = dict(self.lose.votes)
         st.drive_warning = self.drive_check.warning
         self.state = st

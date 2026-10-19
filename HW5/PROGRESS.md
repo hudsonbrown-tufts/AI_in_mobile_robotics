@@ -365,3 +365,21 @@ On this sim the old code also loses most matches against a chaser, while on the 
 
   The old code on the same sim lost about 80–90% of matches.
 - `sim.py test`: 5/5.
+
+## 2026-10-19: finish the push, faster aggression
+
+**Problem (real robot):** the robot stopped short of the tape even while shoving the opponent, so the opponent never went fully out. Sim test (still opponent near the edge, attacking): before the fix, our front stopped at r 0.90, the opponent's center reached r 1.14, and it was fully out (r > 1.21) 0/20 times.
+
+**Fix:**
+- **Push-out mode** (`pushing_out` in behavior.py, set by the Brain each tick, held 0.3 s): our front is on the opponent and the opponent's center is further out than ours by 0.03.
+  - No edge escape, no color reflex, and no color vote for "lost".
+  - The speed limiter allows our front out to r 1.10, with our center no further than r 0.92.
+- **Result (sim):** opponent fully out 20/20, our front at most r 1.03, and we went out 0/20.
+
+**Aggression:**
+- Attack now needs aggression ≥ 0.5 (was 0.15; a hand at rest reads about 0.1).
+- **Faster response:**
+  - Controller: RMS window 0.4 → 0.2 s, release 1.0 → 0.4 s, publishing at 20 Hz (was 10).
+  - Laptop: EMA 0.35 → 0.6, MQTT timeout 2 → 1 s, decay 0.7 → 0.4 s.
+
+**Checks:** `sim.py test` 5/5. Chaser matches are unchanged within noise (defense W0 L8 D22, attack W0 L7 D23 of 30).

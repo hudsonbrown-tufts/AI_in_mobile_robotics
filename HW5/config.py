@@ -107,10 +107,10 @@ CONTROL_HZ = 30
 REFLEX_HZ = 200                 # color-sensor edge reflex thread
 
 # --- Shake -> aggression ---
-SHAKE_EMA = 0.35                # per-message smoothing
-SHAKE_TIMEOUT_S = 2.0           # no message for this long -> aggression decays to 0 (defense)
-SHAKE_DECAY_S = 0.7             # ...with this time constant
-DEFENSE_BELOW = 0.15            # aggression under this = DEFENSE
+SHAKE_EMA = 0.6                 # per-message smoothing (20 Hz messages: ~0.05 s time constant)
+SHAKE_TIMEOUT_S = 1.0           # no message for this long -> aggression decays to 0 (defense)
+SHAKE_DECAY_S = 0.4             # ...with this time constant
+DEFENSE_BELOW = 0.5             # aggression under this = DEFENSE (a hand at rest reads ~0.1)
 
 # --- Pose EKF noise ---
 EKF_Q_POS = 0.02                # ring units / sqrt(s): unmodeled motion (pushes, slip)
@@ -172,6 +172,13 @@ PUSH_BIAS = -3.2                # log-odds with no evidence
 PUSH_ON = 0.6
 PUSH_OFF = 0.4
 PUSH_NEAR_EDGE_R = 0.7
+
+# Pushing the opponent out: while our front is on it and it is further out than we are, the
+# tape rules relax so we finish the push instead of stopping short at the tape.
+PUSH_OUT_NOSE_R = 1.10          # our front may go this far (ring units; the tape is at 1.0, ~4 cm past it)
+PUSH_OUT_MAX_R = 0.92           # ...and our center no further than this
+PUSH_OUT_HOLD_S = 0.3           # stays on this long after the contact flickers off (camera noise)
+PUSH_OUT_MARGIN = 0.03          # opponent's center must be at least this much further out than ours
 PUSH_FAR_GAP = 0.15             # opponent seen further than this (ring units, ~6 cm) past touching...
 PUSH_FAR_WEIGHT = 4.0           # ...argues strongly against "being pushed" (it can't push from there)
 

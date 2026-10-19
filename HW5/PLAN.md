@@ -159,7 +159,7 @@
 
 **4e. Aggression:**
 - MQTT `shake:x` goes through an EMA filter.
-- If no message arrives for 2 s, aggression decays to 0, which means defense. Losing the controller should never make the robot charge blindly.
+- If no message arrives for 1 s, aggression decays to 0, which means defense. Losing the controller should never make the robot charge blindly.
 
 **4f. Lose detection** (any two of these, or the camera alone for 0.5 s):
 - the camera shows more than 60% of our blob outside r = 1.0;
@@ -174,8 +174,8 @@ On a loss: stop the motors, play `lose.mp3` once, publish `sumo:lost`, and freez
 | 1 | `LOST` | lose detection (4f) | stop, sound, wait for reset |
 | 2 | `EDGE_ESCAPE` | color = BLUE, or edge risk > 0.8 | brake, reverse ~0.4 s, then rotate toward the ring center using the fused heading (fixed 135° spin if the pose is uncertain), then resume |
 | 3 | `PUSHED` | `push_prob` > 0.6 (and the opponent is close: one seen far away can't be pushing us) | **near the edge:** along the tangent plus inward direction (slip sideways rather than pushing straight back); **otherwise:** turn to face the opponent and drive into it (in defense, pivot first if it hit our side). Power comes from the speed ramp. |
-| 4a | `DEFENSE` | aggression < 0.15 | stay still at the center: creep back (20%) if knocked further than r 0.15, until r < 0.06; turn slowly (15%) to face the opponent only when it is more than 30° off |
-| 4b | `ATTACK` | aggression ≥ 0.15 | pursue the opponent. The aim point is behind the opponent, on the line from the ring center through the opponent, so we push it outward. Approach at 18 + 12·aggression %; once shoving it, the speed ramp decides. |
+| 4a | `DEFENSE` | aggression < 0.5 | stay still at the center: creep back (20%) if knocked further than r 0.15, until r < 0.06; turn slowly (15%) to face the opponent only when it is more than 30° off |
+| 4b | `ATTACK` | aggression ≥ 0.5 | pursue the opponent. The aim point is behind the opponent, on the line from the ring center through the opponent, so we push it outward. Approach at 18 + 12·aggression %; once shoving it, the speed ramp decides. |
 | 5 | `BLIND` | camera down | wander and turn away from the edge using only the color sensor, with speed scaled by aggression |
 
 ### Decision tree (evaluated every 20 Hz tick, top to bottom)
@@ -201,7 +201,7 @@ flowchart TD
     P2 -- No --> PUSHBACK["PUSHED, push back: face the opponent,<br/>drive in (speed ramp sets the power)"]
     P1 -- No --> C1{"Camera tracking OK?<br/>(a tag seen recently)"}
     C1 -- No --> BLIND["BLIND: wander,<br/>color-sensor reflex only,<br/>speed scaled by aggression"]
-    C1 -- Yes --> A1{"Aggression under 0.15?<br/>(MQTT silent 2 s counts as 0)"}
+    C1 -- Yes --> A1{"Aggression under 0.5?<br/>(MQTT silent 1 s counts as 0)"}
     A1 -- Yes --> D1{"Far from center?<br/>r over 0.15"}
     D1 -- Yes --> DHOME["DEFENSE: creep back<br/>to the center (20%)"]
     D1 -- No --> D2{"Opponent more than<br/>30° off our front?"}
@@ -222,6 +222,10 @@ Every movement output (all leaves except IDLE, HOLD and LOST) then goes through 
   - The opponent is touching us on the side we're driving toward, and we move at under 45% of the commanded speed for 0.2 s. That speed comes from the camera, or from the encoders when the camera is lost.
 - While resisted, the cap rises 70%/s up to 80%. When free, it falls back at 150%/s.
 - The side panel shows `cap NN%` and `RESISTED`, and the match log has `speed_cap` and `resisted` columns.
+- **Pushing the opponent out:** our front is on the opponent and the opponent is further out than us (this stays on for 0.3 s after contact flickers).
+  - The tape rules relax: no edge escape, no color reflex, and no color vote for "lost".
+  - The limiter lets our front go to r 1.10 (about 4 cm past the tape), with our center no further than r 0.92.
+  - When the opponent drops away, the normal rules return immediately.
 - Edge escapes always get at least their own 40%. When pushed, the escape backs off as hard as the ramp allows. It picks whichever direction (forward or back) has more room, counting the opponent as a wall. When neither has room, it arcs toward the center instead.
 
 - The edge reflex runs inside the BLE color-sensor read on every loop, so it can override any state at once.
