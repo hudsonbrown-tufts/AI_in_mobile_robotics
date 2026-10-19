@@ -1,0 +1,3 @@
+# Local-only: old calibrations moved aside by the setup walkthrough, and match logs
+calibration_backup/
+logs/

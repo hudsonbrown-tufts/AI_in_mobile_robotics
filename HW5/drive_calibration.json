@@ -1,0 +1,12 @@
+{
+  "reverse": false,
+  "swap_sides": false,
+  "enc_left_sign": -1,
+  "enc_right_sign": 1,
+  "ring_per_wheel_deg": 0.0018284689895498101,
+  "track_ring": 0.25269952362269593,
+  "wheel_dps_per_pct": 9.65625,
+  "gyro_axis": 2,
+  "gyro_sign": 1,
+  "gyro_scale": 1.0
+}

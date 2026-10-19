@@ -1,0 +1,6 @@
+name: Sumo Shake Controller
+description: "Reads an MPU-6050 and publishes how hard the board is being shaken (shake:0..1) over MQTT to the HW5 sumo robot."
+icon: 🤼
+version: "1.0.0"
+ports: []
+bricks: []
