@@ -9,7 +9,7 @@ real board app is running (both would publish on the same topics).
     .venv/Scripts/python HW6/testing/fake_board.py --activity running
     .venv/Scripts/python HW6/testing/fake_board.py --part1 p1.json --part2 p2.json
 
-By default it uses the app's saved part1_calibration.json / part2_model.json.
+By default it uses the app's saved part1_calibration.json / part2_rules.json.
 """
 
 import argparse
@@ -83,9 +83,17 @@ def main():
     ap.add_argument("--period", type=float, default=15.0, help="seconds per activity when cycling")
     ap.add_argument("--person", type=int, default=7, help="synthetic person seed")
     ap.add_argument("--part1", help="use this Part 1 calibration instead of the app's")
-    ap.add_argument("--part2", help="use this Part 2 model instead of the app's")
+    ap.add_argument("--part2", help="use this Part 2 rules file instead of the app's")
     ap.add_argument("--control-file", help="simulate the activity named in this file (for scripted tests)")
+    ap.add_argument("--topic-prefix", default="ME193/hudson/hw6",
+                    help="MQTT topic prefix; use a different one so the real board's messages don't mix in")
+    ap.add_argument("--broker", help="MQTT broker address (default: the broker on the board, via config.find_broker)")
     args = ap.parse_args()
+    # main.py uses 172.17.0.1, which only means "this board" inside the board's Docker.
+    broker = args.broker or config.find_broker()
+    if broker is None:
+        raise SystemExit("No MQTT broker found at the board's addresses (tools/board_secrets.py HOSTS); "
+                         "pass --broker <address>")
 
     sketch = FakeSketch(args.activity, args.period, args.person, args.control_file)
 
@@ -113,7 +121,12 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="hw6_fake_board_"))
     for name in ("main.py", "classifiers.py"):
         shutil.copy(config.APP_PYTHON / name, tmp / name)
-    for src, dst in ((args.part1, C.PART1_CALIBRATION_FILE), (args.part2, C.PART2_MODEL_FILE)):
+    main_py = tmp / "main.py"
+    code = main_py.read_text(encoding="utf-8").replace('"ME193/hudson/hw6/', f'"{args.topic_prefix}/')
+    code = code.replace('BROKER = "172.17.0.1"', f'BROKER = "{broker}"')
+    main_py.write_text(code, encoding="utf-8")
+    print(f"[fake board] MQTT broker {broker}, topics {args.topic_prefix}/...")
+    for src, dst in ((args.part1, C.PART1_CALIBRATION_FILE), (args.part2, C.PART2_RULES_FILE)):
         src = Path(src) if src else dst
         if src.exists():
             shutil.copy(src, tmp / dst.name)

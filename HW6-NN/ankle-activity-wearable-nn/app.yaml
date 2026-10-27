@@ -1,0 +1,6 @@
+name: Ankle Activity Wearable (NN)
+description: "HW6: MPU-6050 on the ankle. Classifies standing / walking / running / biking (Part 1: peak acceleration in one direction, Part 2: neural network on all IMU outputs) and scrolls the result on the LED matrix."
+icon: 🦶
+version: "1.0.0"
+ports: []
+bricks: []

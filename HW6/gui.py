@@ -15,6 +15,7 @@ the result. Until it's installed, the current calibration stays in use.
 import json
 import queue
 import sys
+import threading
 import time
 import tkinter as tk
 from collections import deque
@@ -39,7 +40,7 @@ PLOT_ROWS = PLOT_SECONDS * C.SAMPLE_HZ
 TICK_MS = 100
 PLOT_EVERY_TICKS = 2           # plot redraw at 5 Hz
 MODE_CONFIRM_S = 4.0           # give the board this long to confirm a mode switch
-PART_NAMES = {1: "Part 1: peak acceleration (one direction)", 2: "Part 2: neural network (all IMU outputs)"}
+PART_NAMES = {1: "Part 1: peak acceleration (one direction)", 2: "Part 2: decision rules (all IMU outputs)"}
 if sys.platform == "win32":
     try:  # sharp text with Windows display scaling
         import ctypes
@@ -47,7 +48,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-FRAME_TITLES = {1: " PART 1: peak acceleration, one direction", 2: " PART 2: neural network, all IMU outputs"}
+FRAME_TITLES = {1: " PART 1: peak acceleration, one direction", 2: " PART 2: decision rules, all IMU outputs"}
 
 
 class WearableGui(tk.Tk):
@@ -74,15 +75,13 @@ class WearableGui(tk.Tk):
         self.deploy_job = None
         self.tick_count = 0
 
-        self.mqtt = MQTTClient(client_id="")
-        self.mqtt_ok = False
-        try:
-            self.mqtt.connect()
-            self.mqtt.subscribe(config.TOPIC_STATE, lambda t, p: self.inbox.put(("state", p)))
-            self.mqtt.subscribe(config.TOPIC_RAW, lambda t, p: self.inbox.put(("raw", p)))
-            self.mqtt_ok = True
-        except Exception as exc:
-            print(f"Couldn't connect to {config.BROKER}: {exc}")
+        # MQTT: the broker runs on the board, so look for it at the board's
+        # addresses on a background thread, retrying until it answers. Once
+        # connected, paho reconnects (and mqttlib re-subscribes) by itself.
+        self.mqtt = None
+        self.broker = None
+        self.closing = False
+        threading.Thread(target=self._connect_mqtt, daemon=True).start()
 
         tabs = ttk.Notebook(self)
         tabs.pack(fill="both", expand=True)
@@ -130,8 +129,6 @@ class WearableGui(tk.Tk):
         self.p2_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         self.p2_text = tk.Label(self.p2_frame, text="", font=("Consolas", 11), justify="left", anchor="nw")
         self.p2_text.pack(fill="x")
-        self.p2_bars = tk.Canvas(self.p2_frame, height=96, highlightthickness=0)
-        self.p2_bars.pack(fill="x")
 
         self.fig = Figure(figsize=(10, 4.2), dpi=90)
         self.ax1 = self.fig.add_subplot(2, 1, 1)
@@ -141,11 +138,34 @@ class WearableGui(tk.Tk):
         self.canvas = FigureCanvasTkAgg(self.fig, master=root)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
 
+    def _connect_mqtt(self):
+        while not self.closing:
+            host = config.find_broker()
+            if host:
+                client = MQTTClient(broker=host, port=config.PORT)
+                client.subscribe(config.TOPIC_STATE, lambda t, p: self.inbox.put(("state", p)))
+                client.subscribe(config.TOPIC_RAW, lambda t, p: self.inbox.put(("raw", p)))
+                try:
+                    client.connect()
+                    if client.connected:
+                        self.mqtt, self.broker = client, host
+                        print(f"MQTT: connected to the broker at {host}:{config.PORT}")
+                        return
+                    client.disconnect()
+                except Exception as exc:
+                    print(f"MQTT: couldn't connect to {host}: {exc}")
+            time.sleep(5)
+
+    @property
+    def mqtt_ok(self):
+        return self.mqtt is not None and self.mqtt.connected
+
     def request_mode(self, mode):
         self.requested_mode = mode
         self.requested_at = time.monotonic()
         # Retained, so the board picks the mode up again after a restart.
-        self.mqtt.publish(config.TOPIC_CMD, f"mode:{mode}", retain=True)
+        if self.mqtt is not None:
+            self.mqtt.publish(config.TOPIC_CMD, f"mode:{mode}", retain=True)
 
     # ------------------------------------------------------ Calibration tab --
     def _build_calibration(self, root):
@@ -209,7 +229,7 @@ class WearableGui(tk.Tk):
             self.history.insert("", "end", iid=str(folder), values=[
                 folder.name, part1,
                 f"{p1.get('accuracy', 0):.0%}" if p1 else "-",
-                f"{p2.get('validation_accuracy', 0):.0%}" if p2 else "-",
+                f"{p2.get('accuracy', 0):.0%}" if p2 and "accuracy" in p2 else "-",
                 ", ".join((p2 or p1 or {}).get("people", []))])
         self.update_board_calibration()
 
@@ -396,6 +416,10 @@ class WearableGui(tk.Tk):
 
         if not self.mqtt_ok:
             self.state_label.config(text="no MQTT connection", bg="#555555")
+            self.status_label.config(
+                text=("Lost the broker at " + self.broker + ", reconnecting..." if self.broker else
+                      "Looking for the MQTT broker on the board (addresses in tools/board_secrets.py HOSTS), "
+                      "retrying every few seconds..."))
             return
         if not online:
             self.state_label.config(text="board offline", bg="#555555")
@@ -411,12 +435,12 @@ class WearableGui(tk.Tk):
         part = msg.get(f"part{mode}")
         state = msg.get("state")
         if part is None:
-            self.state_label.config(text="NO CAL" if mode == 1 else "NO MODEL", bg="#555555")
+            self.state_label.config(text="NO CAL", bg="#555555")
         elif state is None:
             self.state_label.config(text="deciding...", bg="#555555")
         else:
             self.state_label.config(text=state.upper(), bg=config.STATE_COLORS[state])
-        self.status_label.config(text=f"board online | Part {mode} on the LED matrix | "
+        self.status_label.config(text=f"board online (broker {self.broker}) | Part {mode} on the LED matrix | "
                                       f"{msg.get('rows_total', 0)} samples received, "
                                       f"{msg.get('dropped', 0)} dropped")
 
@@ -444,20 +468,16 @@ class WearableGui(tk.Tk):
                                      "Press Shift+C (capital C) to calibrate.")
 
         p2 = msg.get("part2")
-        self.p2_bars.delete("all")
         if p2:
-            self.p2_text.config(text=f"window     {p2['raw'] or 'unsure (<60%)'}\n"
-                                     f"smoothed   {p2['state']}\nclass probabilities:")
-            w = max(self.p2_bars.winfo_width(), 300)
-            for i, (cls, p) in enumerate(zip(p2["classes"], p2["probs"] or [0] * 4)):
-                y = 4 + i * 23
-                self.p2_bars.create_text(4, y + 9, text=cls, anchor="w", font=("Consolas", 10))
-                self.p2_bars.create_rectangle(90, y, w - 60, y + 18, outline="#bbbbbb")
-                self.p2_bars.create_rectangle(90, y, 90 + (w - 150) * p, y + 18,
-                                              fill=config.STATE_COLORS[cls], outline="")
-                self.p2_bars.create_text(w - 54, y + 9, text=f"{p:.0%}", anchor="w", font=("Consolas", 10))
+            f = p2.get("features") or {}
+            feats = (f"tilt {f.get('tilt_deg', 0):5.1f} deg   accel var {f.get('acc_std', 0):.2f} g\n"
+                     f"accel peak {f.get('acc_peak', 0):.2f} g   rotation var {f.get('rot_var', 0):.0f} deg/s"
+                     if f else "features: -")
+            self.p2_text.config(text=f"window     {p2['raw'] or 'unsure (lying still)'}\n"
+                                     f"smoothed   {p2['state']}\n{feats}\nquestions answered:\n  "
+                                     + "\n  ".join(p2.get("path") or ["-"]))
         else:
-            self.p2_text.config(text="The board has no Part 2 model.\n"
+            self.p2_text.config(text="The board has no Part 2 calibration.\n"
                                      "Press Shift+C (capital C) to calibrate.")
 
     def update_plot(self):
@@ -499,14 +519,15 @@ class WearableGui(tk.Tk):
         self.ax2b.plot(t, gyr, color="#2e9d4f", lw=1)
         self.ax2.set_ylabel("|accel| (g)", color="#d63a2f", fontsize=9)
         self.ax2b.set_ylabel("|gyro| (deg/s)", color="#2e9d4f", fontsize=9)
-        self.ax2.set_title("Part 2 sees all 6 channels (magnitudes shown)", fontsize=10)
+        self.ax2.set_title("Part 2 uses all 6 channels (magnitudes shown)", fontsize=10)
         self.ax2.set_xlabel("seconds")
         self.ax2.set_xlim(-PLOT_SECONDS, 0)
         self.ax2.grid(alpha=0.3)
         self.canvas.draw_idle()
 
     def on_close(self):
-        if self.mqtt_ok:
+        self.closing = True
+        if self.mqtt is not None:
             self.mqtt.disconnect()
         self.destroy()
 

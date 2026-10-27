@@ -1,7 +1,8 @@
 """Step-by-step calibration window (opened from gui.py with Shift+C, i.e. a capital C).
 
-Steps: setup -> record standing -> walking -> running -> biking
-       -> fit PART 1 (direction + thresholds) and PART 2 (neural network)
+Steps: setup -> record the activities picked in setup (all 4 by default, or
+       e.g. just biking; the others then come from earlier recordings)
+       -> fit PART 1 (direction + thresholds) and PART 2 (decision rules)
        -> compare with the current calibration -> install + deploy, or discard.
 
 Nothing about the calibration in use changes until "Install" is pressed:
@@ -38,7 +39,7 @@ class CalibrationWizard(tk.Toplevel):
         self.app = app
         self.title("Calibrate the wearable")
         s = self.winfo_fpixels("1i") / 96
-        self.geometry(f"{int(880 * s)}x{int(700 * s)}+{int(60 * s)}+{int(40 * s)}")
+        self.geometry(f"{int(880 * s)}x{int(780 * s)}+{int(60 * s)}+{int(40 * s)}")
         self.transient(app)
         self.protocol("WM_DELETE_WINDOW", self.cancel)
 
@@ -55,6 +56,10 @@ class CalibrationWizard(tk.Toplevel):
         self.seconds_var = tk.IntVar(value=60)
         self.delay_var = tk.IntVar(value=8)
         self.include_old_var = tk.BooleanVar(value=True)
+        # Which activities to record this time; the rest come from earlier recordings.
+        self.record_vars = {s: tk.BooleanVar(value=True) for s in C.STATES}
+        # Re-recorded activities: ignore this person's older takes of them in the fit (files are kept).
+        self.replace_old_var = tk.BooleanVar(value=True)
 
         self.header = tk.Label(self, font=(FONT, 16, "bold"), anchor="w", padx=14, pady=10,
                                bg="#1a56c4", fg="white")
@@ -91,7 +96,7 @@ class CalibrationWizard(tk.Toplevel):
         fitting = self.fit_job is not None and not self.fit_job.done
         deploying = self.deploy_job is not None and not self.deploy_job.done
         can_next = {
-            "setup": bool(self.person_var.get().strip()),
+            "setup": self.setup_problem() is None,
             "fit": self.new_cal is not None,
             "results": False,
         }.get(step, step in self.session_files) and not recording
@@ -102,7 +107,26 @@ class CalibrationWizard(tk.Toplevel):
         self.cancel_btn.config(text="Close" if self.installed_folder else "Cancel (keep current calibration)",
                                state="disabled" if deploying else "normal")
 
+    def selected(self):
+        """Activities to record this session, in the usual order."""
+        return [s for s in C.STATES if self.record_vars[s].get()]
+
+    def setup_problem(self):
+        """Why setup can't continue yet (None if it can)."""
+        if not self.person_var.get().strip():
+            return "Enter who is wearing it."
+        # Nothing ticked is allowed: it refits from the earlier recordings only
+        # (e.g. after a change to how the calibration is computed).
+        recs = dataset.load_recordings(config.DATA_DIR)
+        missing = [s for s in C.STATES if s not in self.selected() and not any(r.label == s for r in recs)]
+        if missing:
+            return (f"There are no earlier recordings of {', '.join(missing)}, so "
+                    f"{'it has' if len(missing) == 1 else 'they have'} to be recorded too.")
+        return None
+
     def next(self):
+        if self.steps[self.index] == "setup":
+            self.steps = ["setup"] + self.selected() + ["fit", "results"]
         if self.index < len(self.steps) - 1:
             self.index += 1
             self.show()
@@ -143,8 +167,8 @@ class CalibrationWizard(tk.Toplevel):
     def _build_setup(self):
         b = self.body
         text = (
-            "This walks you through recording the 4 activities, then fits Part 1 (the best single "
-            "direction + 3 thresholds) and Part 2 (the neural network) from the recordings.\n\n"
+            "This walks you through recording the activities you pick below, then fits Part 1 (the best single "
+            "direction + 3 thresholds) and Part 2 (the decision rules) from the recordings.\n\n"
             "Nothing changes on the board until you press Install at the end. If you cancel or "
             "discard, the current calibration stays in use. When you install, the old one is kept "
             "in HW6/calibration_history/ and can be restored."
@@ -166,14 +190,38 @@ class CalibrationWizard(tk.Toplevel):
         for i, (label, widget) in enumerate(rows):
             tk.Label(form, text=label, font=(FONT, 11)).grid(row=i, column=0, sticky="w", padx=(0, 12), pady=3)
             widget.grid(row=i, column=1, sticky="w", pady=3)
-        self.person_var.trace_add("write", lambda *a: self.update_buttons())
 
-        recs = dataset.load_recordings(config.DATA_DIR)
-        people = sorted({r.person for r in recs})
-        old = (f"{len(recs)} earlier recordings from {', '.join(people)}" if recs else "no earlier recordings yet")
-        ttk.Checkbutton(b, text=f"Also use the earlier recordings in HW6/data ({old}). "
-                                "Recommended: more people = works better on someone new.",
-                        variable=self.include_old_var).pack(anchor="w", pady=(8, 4))
+        # Which activities to record now. Unticked ones are taken from earlier recordings,
+        # e.g. to redo just biking after the other three were recorded in an earlier session.
+        self.setup_recs = dataset.load_recordings(config.DATA_DIR)
+        tk.Label(b, text="Activities to record this time (the others use earlier recordings):",
+                 font=(FONT, 11, "bold"), anchor="w").pack(fill="x", pady=(8, 2))
+        acts = ttk.Frame(b)
+        acts.pack(anchor="w")
+        self.have_labels = {}
+        for i, s in enumerate(C.STATES):
+            ttk.Checkbutton(acts, text=s, variable=self.record_vars[s],
+                            command=self.refresh_setup).grid(row=i, column=0, sticky="w", padx=(0, 14))
+            self.have_labels[s] = tk.Label(acts, font=(FONT, 10), fg="#555555", anchor="w")
+            self.have_labels[s].grid(row=i, column=1, sticky="w")
+
+        people = sorted({r.person for r in self.setup_recs})
+        old = (f"{len(self.setup_recs)} earlier recordings from {', '.join(people)}"
+               if self.setup_recs else "no earlier recordings yet")
+        self.replace_check = ttk.Checkbutton(
+            b, variable=self.replace_old_var,
+            text="The new takes replace this person's earlier takes of the same activities "
+                 "(the old files are kept, just not used)")
+        self.replace_check.pack(anchor="w", pady=(8, 0))
+        self.include_old_check = ttk.Checkbutton(
+            b, variable=self.include_old_var,
+            text=f"Also use the earlier recordings in HW6/data ({old}). "
+                 "Recommended: more people = works better on someone new.")
+        self.include_old_check.pack(anchor="w", pady=(4, 0))
+        self.setup_note = tk.Label(b, font=(FONT, 10, "bold"), anchor="w", justify="left", wraplength=820)
+        self.setup_note.pack(fill="x", pady=(4, 0))
+        self.person_var.trace_add("write", lambda *a: self.refresh_setup())
+        self.refresh_setup()
 
         cur = calibration.current()
         tk.Label(b, text="Calibration in use now:", font=(FONT, 11, "bold"), anchor="w").pack(fill="x", pady=(10, 0))
@@ -181,6 +229,37 @@ class CalibrationWizard(tk.Toplevel):
 
         self.board_label = tk.Label(b, font=(FONT, 11, "bold"), anchor="w")
         self.board_label.pack(fill="x", pady=(10, 0))
+
+    def refresh_setup(self):
+        """Update the setup step after a tick box or the person's name changed."""
+        if not hasattr(self, "setup_note") or not self.setup_note.winfo_exists():
+            return
+        person = self.person_var.get().strip().replace(" ", "_")
+        for s in C.STATES:
+            mine = sum(r.seconds for r in self.setup_recs if r.label == s and r.person == person)
+            everyone = sum(r.seconds for r in self.setup_recs if r.label == s)
+            self.have_labels[s].config(text=f"already recorded: {mine:.0f} s by {person or '?'}, "
+                                            f"{everyone:.0f} s by everyone")
+        self.header.config(text=f"Step 1 of {len(self.selected()) + 3}:  Setup")
+        partial = len(self.selected()) < len(C.STATES)
+        if partial:
+            # The activities not recorded now can only come from earlier recordings.
+            self.include_old_var.set(True)
+        self.include_old_check.config(state="disabled" if partial else "normal")
+        problem = self.setup_problem()
+        if problem:
+            self.setup_note.config(text=problem, fg="#d63a2f")
+        elif not self.selected():
+            self.setup_note.config(text="Nothing to record: Next goes straight to refitting Part 1 and Part 2 "
+                                        "from the earlier recordings.", fg="#2e9d4f")
+        elif partial:
+            others = [s for s in C.STATES if s not in self.selected()]
+            self.setup_note.config(text=f"Recording {', '.join(self.selected())} now; "
+                                        f"{', '.join(others)} will come from the earlier recordings.",
+                                   fg="#2e9d4f")
+        else:
+            self.setup_note.config(text="")
+        self.update_buttons()
 
     # ------------------------------------------------------------ record -----
     def _build_record(self):
@@ -267,23 +346,32 @@ class CalibrationWizard(tk.Toplevel):
         self.new_cal = None
         files = set(map(str, self.session_files.values()))
         include_old = self.include_old_var.get()
+        replaced = set(self.session_files) if self.replace_old_var.get() else set()
+        person = self.person_var.get().strip().replace(" ", "_")
 
         def work(job):
             recs = dataset.load_recordings(config.DATA_DIR)
             if not include_old:
                 recs = [r for r in recs if str(r.path) in files]
-            job.log(f"Using {len(recs)} recordings ({'all of HW6/data' if include_old else 'this session only'})")
+            # This person's older takes of the activities re-recorded now are left out.
+            dropped = [r for r in recs if r.person == person and r.label in replaced and str(r.path) not in files]
+            recs = [r for r in recs if r not in dropped]
+            job.log(f"Using {len(recs)} recordings ({'all of HW6/data' if include_old else 'this session only'}):")
+            for r in recs:
+                job.log(f"  {r.person}/{r.path.name}  {r.seconds:.0f} s"
+                        + ("  (this session)" if str(r.path) in files else ""))
+            for r in dropped:
+                job.log(f"  left out (replaced by this session): {r.person}/{r.path.name}")
             job.log("\n===== PART 1: choosing the direction and thresholds =====")
             import calibrate_part1
             part1 = calibrate_part1.calibrate(recs, log=job.log)
-            job.log("\n===== PART 2: training the neural network (a few minutes) =====")
-            import train_part2              # imports PyTorch, so only when needed
-            part2 = train_part2.train_model(recs, log=job.log,
-                                            should_stop=lambda: job.stop_requested)
+            job.log("\n===== PART 2: fitting the decision rules' thresholds =====")
+            import fit_part2
+            part2 = fit_part2.fit_rules(recs, log=job.log)
             return part1, part2
 
         self.fit_job = calibration.Job(work)
-        self.fit_label.config(text="Fitting... (Part 2 training takes a few minutes)", fg="#c77800")
+        self.fit_label.config(text="Fitting Part 1 and Part 2...", fg="#c77800")
 
     # ------------------------------------------------------------ results ----
     def _build_results(self):
@@ -405,20 +493,20 @@ def describe(cal):
     else:
         lines.append("Part 1: not calibrated yet")
     if p2:
-        lines.append(f"Part 2: made {p2.get('created', '?')}, validation accuracy "
-                     f"{p2.get('validation_accuracy', 0):.0%} ({p2.get('validation', '?')})")
+        lines.append(f"Part 2: made {p2.get('created', '?')}, decision rules, accuracy "
+                     f"{p2.get('accuracy', 0):.0%} ({p2.get('scored_by', '?')})")
         lines.append(f"        people: {', '.join(p2.get('people', []))}")
     else:
-        lines.append("Part 2: not trained yet")
+        lines.append("Part 2: not calibrated yet")
     return "\n".join(lines)
 
 
 def comparison_rows(cur, new):
     def p1(c, key, fmt=str):
-        return fmt(c["part1"][key]) if c.get("part1") else "-"
+        return fmt(c["part1"][key]) if c.get("part1") and key in c["part1"] else "-"
 
     def p2(c, key, fmt=str):
-        return fmt(c["part2"][key]) if c.get("part2") else "-"
+        return fmt(c["part2"][key]) if c.get("part2") and key in c["part2"] else "-"
 
     pct = "{:.0%}".format
     th = lambda v: ", ".join(f"{t:.2f}" for t in v)  # noqa: E731
@@ -430,8 +518,8 @@ def comparison_rows(cur, new):
         ("Part 1 thresholds (g)", p1(cur, "thresholds", th), p1(new, "thresholds", th)),
         ("Part 1 accuracy", p1(cur, "accuracy", pct), p1(new, "accuracy", pct)),
         ("Part 1 scored by", p1(cur, "scored_by"), p1(new, "scored_by")),
-        ("Part 2 accuracy", p2(cur, "validation_accuracy", pct), p2(new, "validation_accuracy", pct)),
-        ("Part 2 validated by", p2(cur, "validation"), p2(new, "validation")),
+        ("Part 2 accuracy", p2(cur, "accuracy", pct), p2(new, "accuracy", pct)),
+        ("Part 2 scored by", p2(cur, "scored_by"), p2(new, "scored_by")),
         ("People", p2(cur, "people", people), p2(new, "people", people)),
         ("Made", p1(cur, "created"), p1(new, "created")),
     ]

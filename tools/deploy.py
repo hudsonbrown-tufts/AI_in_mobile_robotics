@@ -233,6 +233,13 @@ def main():
     remote(board, f"mkdir -p {remote_app}")
     push(board, items, remote_app)
 
+    # A build that gets cut off (e.g. a deploy stopped mid-compile) leaves
+    # 0-byte .o files in the sketch build cache, and later builds reuse them,
+    # failing to link with "undefined reference" errors. Delete any so they're
+    # recompiled. Only empty compiled files are touched, not the Python env.
+    remote(board, f"find {remote_app}/.cache/sketch -name '*.o' -size 0 -print -delete 2>/dev/null"
+                  " | sed 's/^/  removed broken build file: /'", check=False, timeout=15)
+
     # Start it
     remote(board, f"arduino-app-cli app start {remote_app}", tty=True)
 

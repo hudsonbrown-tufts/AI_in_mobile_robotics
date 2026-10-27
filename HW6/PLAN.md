@@ -1,6 +1,6 @@
 # HW6: Ankle Activity Wearable (UNO Q + MPU-6050)
 
-**Status:** plan v3 (2026-10-21): coded and tested offline. See PROGRESS.md, README.md and HOW_IT_DECIDES.md.
+**Status:** plan v4 (2026-10-26). **Part 2 is now nested decision rules, not a neural network** (neural nets aren't allowed). The neural-network version described below in "Part 2: neural network" is archived in `HW6-NN/`. The current Part 2 is described in HOW_IT_DECIDES.md section 2; see also PROGRESS.md and README.md.
 
 ## Goal
 - An UNO Q with an MPU-6050 is strapped to the ankle. It classifies **standing / walking / running / biking**. Biking means lying on your back and pedaling in the air.
@@ -16,7 +16,7 @@
 | Part 1 direction | Calibration tests all 3 axes (both signs) and saves the best one. The runtime only ever uses that one direction. |
 | Calibration | One time only, saved to files in the app, no per-user calibration |
 | Calibration UI | Inside the GUI: Shift+C (a capital C) opens a step-by-step wizard (record 4 activities → fit both parts → compare → install + deploy). The calibration in use only changes on Install; cancelling keeps it. Every install is kept in `calibration_history/` and can be restored. |
-| Part 2 model | small neural network (1D CNN), trained on the laptop with PyTorch |
+| Part 2 model | ~~small neural network (1D CNN)~~ → **nested decision rules on 4 features** (tilt, acceleration variation and peak, rotation variation), majority votes of 3, thresholds fitted with Part 1's meet-in-the-middle rule (2026-10-26) |
 | LEDs | LED matrix scrolls the word (STAND / WALK / RUN / BIKE) |
 | Power / link | power bank on the ankle, WiFi + MQTT |
 

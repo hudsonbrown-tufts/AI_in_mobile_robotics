@@ -1,13 +1,13 @@
 """Activity classifiers for the HW6 ankle wearable.
 
 Used by the board (main.py) and by the laptop scripts (calibrate_part1.py,
-train_part2.py, replay.py), so the board and the laptop run exactly the same
+fit_part2.py, replay.py), so the board and the laptop run exactly the same
 decision code.
 
 The file has three sections:
     SHARED  - sample layout, window size, states, smoothing
     PART 1  - peak acceleration along ONE direction, 3 thresholds
-    PART 2  - 1D convolutional neural network on all 6 IMU channels
+    PART 2  - nested decision rules on features of all 6 IMU channels (no neural network)
 
 HOW_IT_DECIDES.md describes both parts in depth.
 """
@@ -41,7 +41,7 @@ COL = {name: i for i, name in enumerate(COLUMNS)}
 
 APP_DIR = Path(__file__).resolve().parent
 PART1_CALIBRATION_FILE = APP_DIR / "part1_calibration.json"
-PART2_MODEL_FILE = APP_DIR / "part2_model.json"
+PART2_RULES_FILE = APP_DIR / "part2_rules.json"
 
 
 class Smoother:
@@ -143,75 +143,107 @@ class Part1PeakClassifier:
 
 
 # =============================================================================
-# PART 2: neural network on all IMU outputs
+# PART 2: decision rules on all IMU outputs (no neural network)
 # =============================================================================
 #
-# Input: the 2 s window of all 6 channels (ax, ay, az in g, gx, gy, gz in
-# deg/s), each divided by a fixed scale saved with the model.
-# Network (trained in train_part2.py with PyTorch, run here with numpy):
-#   Conv1d(6->16, k7) ReLU MaxPool2 -> Conv1d(16->32, k5) ReLU MaxPool2
-#   -> Conv1d(32->32, k5) ReLU -> average over time -> Linear(32->4) -> softmax
+# Four features per 2 s window, computed from all 6 channels:
+#   tilt_deg  - angle (deg) between the window's average acceleration (gravity)
+#               and "up the shin while standing"  -> lying down vs upright
+#   acc_std   - how much the acceleration magnitude varies (g)  -> moving or not
+#   acc_peak  - the highest acceleration magnitude (g)  -> impacts
+#   rot_var   - how much the rotation varies: sqrt(var gx + var gy + var gz)
+#               (deg/s). Uses the variation, not the average, because the
+#               gyro reads ~26 deg/s even when still (a constant bias).
+#
+# The questions, in order (thresholds and "up" come from part2_rules.json,
+# fitted by fit_part2.py with the same meet-in-the-middle rule as PART 1):
+#   Q1 Is the shin tilted like lying down?            (tilt_deg)
+#     yes: Q1a Do the impacts/swing say running instead?   (3 votes: acc_std, acc_peak, rot_var)
+#              -> running   (tilt can look like biking for a moment in a hard stride)
+#          Q1b Is the leg still?                           (3 votes)
+#              -> unsure: lying still is none of the 4 activities, so the state is kept
+#          otherwise -> biking
+#     no:  Q2 Is the leg still?                            (3 votes)
+#              -> standing
+#          Q3 Does it move like running?                   (3 votes)
+#              -> running, otherwise walking
+# Each multi-feature question is a majority vote of 3 features (at least 2
+# agree), so one feature that disagrees with the other two is outvoted.
 
-PART2_CHANNELS = ["ax", "ay", "az", "gx", "gy", "gz"]
-PART2_MIN_CONFIDENCE = 0.6   # below this a window counts as "unsure" (keeps the state)
-
-
-def part2_input(window, scales):
-    """(WINDOW, 12) sample rows -> (6, WINDOW) scaled network input."""
-    x = window[:, [COL[c] for c in PART2_CHANNELS]].T
-    return x / np.asarray(scales, dtype=np.float64)[:, None]
-
-
-def _conv1d_relu(x, weight, bias):
-    """Valid 1D convolution + ReLU. x: (C_in, T), weight: (C_out, C_in, K)."""
-    k = weight.shape[2]
-    patches = np.lib.stride_tricks.sliding_window_view(x, k, axis=1)   # (C_in, T-K+1, K)
-    out = np.einsum("oik,itk->ot", weight, patches) + bias[:, None]
-    return np.maximum(out, 0.0)
-
-
-def _maxpool2(x):
-    t = x.shape[1] // 2 * 2
-    return x[:, :t].reshape(x.shape[0], t // 2, 2).max(axis=2)
-
-
-def softmax(z):
-    e = np.exp(z - np.max(z))
-    return e / e.sum()
+PART2_FEATURES = ["tilt_deg", "acc_std", "acc_peak", "rot_var"]
+MOVEMENT_FEATURES = ["acc_std", "acc_peak", "rot_var"]
 
 
-class Part2NeuralNet:
-    """Numpy forward pass of the trained CNN (weights from part2_model.json)."""
+def part2_features(window, up):
+    """The 4 PART 2 features of a (WINDOW, 12) window. `up` = unit gravity direction while standing."""
+    acc = window[:, [COL["ax"], COL["ay"], COL["az"]]]
+    gyr = window[:, [COL["gx"], COL["gy"], COL["gz"]]]
+    g = acc.mean(axis=0)
+    n = float(np.linalg.norm(g))
+    tilt = float(np.degrees(np.arccos(np.clip(g @ np.asarray(up) / n, -1.0, 1.0)))) if n > 1e-6 else 90.0
+    mag = np.linalg.norm(acc, axis=1)
+    return {
+        "tilt_deg": tilt,
+        "acc_std": float(mag.std()),
+        "acc_peak": float(mag.max()),
+        "rot_var": float(np.sqrt(gyr.var(axis=0).sum())),
+    }
 
-    def __init__(self, model):
-        self.classes = model["classes"]
-        self.scales = model["scales"]
-        w = {k: np.asarray(v, dtype=np.float64) for k, v in model["weights"].items()}
-        self.layers = [
-            (w["conv1.weight"], w["conv1.bias"], True),
-            (w["conv2.weight"], w["conv2.bias"], True),
-            (w["conv3.weight"], w["conv3.bias"], False),
-        ]
-        self.fc_w, self.fc_b = w["fc.weight"], w["fc.bias"]
-        self.info = {k: v for k, v in model.items() if k != "weights"}
+
+def side(value, test):
+    """Which class one feature votes for: test = {"threshold", "above", "below"}."""
+    return test["above"] if value > test["threshold"] else test["below"]
+
+
+class Part2Rules:
+    """The PART 2 question sequence with thresholds from part2_rules.json."""
+
+    def __init__(self, rules):
+        self.up = np.asarray(rules["up"], dtype=float)
+        self.questions = rules["questions"]
+        self.created = rules.get("created")
+        self.info = {k: v for k, v in rules.items() if k != "questions"}
 
     @classmethod
-    def load(cls, path=PART2_MODEL_FILE):
-        with open(path) as f:
+    def load(cls, path=None):
+        with open(path or PART2_RULES_FILE) as f:
             return cls(json.load(f))
 
-    def probabilities_from_input(self, x):
-        """x: (6, WINDOW) scaled input -> class probabilities."""
-        for weight, bias, pool in self.layers:
-            x = _conv1d_relu(x, weight, bias)
-            if pool:
-                x = _maxpool2(x)
-        features = x.mean(axis=1)                    # global average over time
-        return softmax(self.fc_w @ features + self.fc_b)
+    def vote(self, question, features, wanted):
+        """How many of the question's features vote for `wanted` (and how many there are)."""
+        tests = self.questions[question]
+        return sum(side(features[f], t) == wanted for f, t in tests.items()), len(tests)
+
+    def decide(self, features):
+        """features -> (state or None if unsure, list of the questions answered)."""
+        path = []
+        tilt = self.questions["tilted"]["tilt_deg"]
+        if features["tilt_deg"] > tilt["threshold"]:
+            path.append(f"Q1 tilt {features['tilt_deg']:.0f} deg > {tilt['threshold']:.0f}: lying down")
+            n, of = self.vote("bike_or_run", features, "running")
+            if n * 2 > of:
+                path.append(f"Q1a {n}/{of} say running-sized impacts: running")
+                return "running", path
+            path.append(f"Q1a {n}/{of} say running-sized impacts: not running")
+            n, of = self.vote("still", features, "standing")
+            if n * 2 > of:
+                path.append(f"Q1b {n}/{of} say still: lying still, unsure")
+                return None, path
+            path.append(f"Q1b {n}/{of} say still: moving, so biking")
+            return "biking", path
+        path.append(f"Q1 tilt {features['tilt_deg']:.0f} deg <= {tilt['threshold']:.0f}: upright")
+        n, of = self.vote("still", features, "standing")
+        if n * 2 > of:
+            path.append(f"Q2 {n}/{of} say still: standing")
+            return "standing", path
+        path.append(f"Q2 {of - n}/{of} say moving")
+        n, of = self.vote("walk_or_run", features, "running")
+        state = "running" if n * 2 > of else "walking"
+        path.append(f"Q3 {n}/{of} say running: {state}")
+        return state, path
 
     def classify(self, window):
-        """Classify a window. Returns (state or None if unsure, probabilities)."""
-        probs = self.probabilities_from_input(part2_input(window, self.scales))
-        best = int(np.argmax(probs))
-        state = self.classes[best] if probs[best] >= PART2_MIN_CONFIDENCE else None
-        return state, probs
+        """Classify a window. Returns (state or None if unsure, {"features", "path"})."""
+        features = part2_features(window, self.up)
+        state, path = self.decide(features)
+        return state, {"features": features, "path": path}

@@ -2,7 +2,7 @@
 
 The calibration the board uses is the pair of files in the app:
     ankle-activity-wearable/python/part1_calibration.json   (PART 1)
-    ankle-activity-wearable/python/part2_model.json         (PART 2)
+    ankle-activity-wearable/python/part2_rules.json         (PART 2)
 They only change when a new calibration is *installed*. A calibration that is
 started but cancelled or discarded changes nothing. Every install is recorded in
 calibration_history/<time>/:
@@ -26,15 +26,15 @@ import classifiers as C
 HISTORY_DIR = config.HW6_DIR / "calibration_history"
 REPO_DIR = config.HW6_DIR.parent
 APP_NAME = config.APP_DIR.name
-FILES = {"part1": C.PART1_CALIBRATION_FILE, "part2": C.PART2_MODEL_FILE}
+FILES = {"part1": C.PART1_CALIBRATION_FILE, "part2": C.PART2_RULES_FILE}
 
 
 def summary(part, data):
-    """The small, readable part of a calibration file (Part 2 without its weights)."""
+    """The small, readable part of a calibration file (without per-question detail)."""
     if data is None:
         return None
     if part == "part2":
-        return {k: v for k, v in data.items() if k != "weights"}
+        return {k: v for k, v in data.items() if k not in ("questions", "margins")}
     return {k: v for k, v in data.items() if k not in ("all_directions", "peak_stats_g")}
 
 

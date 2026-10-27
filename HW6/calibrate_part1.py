@@ -46,6 +46,50 @@ def best_split(lo, hi):
     return float(mids[best[len(best) // 2]])
 
 
+def midpoint_threshold(lo, hi):
+    """Threshold between a lower group of values and a higher one. -> (threshold, margin).
+
+    Used by PART 1 and by every question in PART 2 (fit_part2.py).
+    The edges of the two clusters are the lower group's 99th percentile and the
+    upper one's 1st (nearly their extremes, but one stray window can't drag a
+    threshold). With a clean gap the threshold meets in the middle of the empty
+    space, so both sides get the same buffer. (Splitting by each side's spread
+    instead gave a very steady activity, like standing, almost no room.) If the
+    groups overlap, it's the value with the fewest balanced mistakes.
+    margin = gap / (sum of the two std devs): how clearly the two groups separate.
+    """
+    lo, hi = np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
+    lo_edge, hi_edge = np.percentile(lo, 99), np.percentile(hi, 1)
+    t = (lo_edge + hi_edge) / 2 if lo_edge < hi_edge else best_split(lo, hi)
+    margin = (hi_edge - lo_edge) / (max(np.std(lo), 1e-3) + max(np.std(hi), 1e-3))
+    return float(t), float(margin)
+
+
+# Biking | standing boundary: standing gets the WHOLE gap, so the threshold sits
+# right at biking's edge instead of in the middle. Standing has no motion, so
+# its Part 1 reading is just the slice of gravity along the chosen direction,
+# and that moves with the strap angle (along +x on Hudson's board: ~0.018 g per
+# degree, so ~5 degrees of strap difference crossed the midpoint threshold and
+# standing read as biking). Biking's edge is set by the pedaling itself, which
+# the strap angle barely changes. See HOW_IT_DECIDES.md section 1.4.
+STRAP_SENSITIVE_PAIR = {"standing", "biking"}
+EDGE_SAFETY_G = 0.005    # stay this far outside biking's edge so its edge windows still read biking
+
+
+def edge_threshold(lo, hi, room_for):
+    """Threshold right at one cluster's edge, giving the whole gap to the other.
+
+    room_for = "lo" puts it just below the upper cluster's edge; "hi" just above
+    the lower cluster's edge. Falls back to midpoint_threshold if they overlap."""
+    lo, hi = np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
+    lo_edge, hi_edge = np.percentile(lo, 99), np.percentile(hi, 1)
+    if lo_edge + EDGE_SAFETY_G >= hi_edge - EDGE_SAFETY_G:
+        return midpoint_threshold(lo, hi)
+    t = lo_edge + EDGE_SAFETY_G if room_for == "hi" else hi_edge - EDGE_SAFETY_G
+    margin = (hi_edge - lo_edge) / (max(np.std(lo), 1e-3) + max(np.std(hi), 1e-3))
+    return float(t), float(margin)
+
+
 def fit_thresholds(peaks, labels):
     """-> (order of states by median peak, 3 ascending thresholds, worst normalized margin)."""
     by_state = {s: peaks[labels == s] for s in C.STATES}
@@ -53,16 +97,12 @@ def fit_thresholds(peaks, labels):
     thresholds, margins = [], []
     for lo_state, hi_state in zip(order, order[1:]):
         lo, hi = by_state[lo_state], by_state[hi_state]
-        lo95, hi5 = np.percentile(lo, 95), np.percentile(hi, 5)
-        s_lo, s_hi = max(np.std(lo), 1e-3), max(np.std(hi), 1e-3)
-        if lo95 < hi5:
-            # Clean gap: split it in proportion to each side's spread, so the
-            # class that varies more (e.g. running) gets more of the room.
-            t = lo95 + (hi5 - lo95) * s_lo / (s_lo + s_hi)
+        if {lo_state, hi_state} == STRAP_SENSITIVE_PAIR:
+            t, margin = edge_threshold(lo, hi, room_for="lo" if lo_state == "standing" else "hi")
         else:
-            t = best_split(lo, hi)
-        thresholds.append(float(t))
-        margins.append(float((hi5 - lo95) / (s_lo + s_hi)))
+            t, margin = midpoint_threshold(lo, hi)
+        thresholds.append(t)
+        margins.append(margin)
     for i in range(1, 3):                     # keep them strictly increasing
         thresholds[i] = max(thresholds[i], thresholds[i - 1] + 1e-3)
     return order, thresholds, min(margins)

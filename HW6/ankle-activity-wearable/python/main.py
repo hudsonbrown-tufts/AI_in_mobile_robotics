@@ -21,7 +21,12 @@ from arduino.app_utils import App, Bridge
 
 import classifiers as C
 
-BROKER = "test.mosquitto.org"
+# Our own Mosquitto broker runs on this board in a Docker container
+# ("mqtt-broker", port 1883; README section 7). This app runs in its own
+# container, where 172.17.0.1 is Docker's fixed address for the board itself,
+# so this works on any WiFi network. The laptop reaches the same broker at the
+# board's WiFi address.
+BROKER = "172.17.0.1"
 PORT = 1883
 TOPIC_STATE = "ME193/hudson/hw6/state"
 TOPIC_RAW = "ME193/hudson/hw6/raw"
@@ -63,10 +68,10 @@ class Wearable:
         self.part1 = self._load(C.Part1PeakClassifier, C.PART1_CALIBRATION_FILE, "Part 1 calibration")
         self.smooth1 = C.Smoother()
         self.peak = None
-        # ---- PART 2: neural network on all IMU outputs (part2_model.json)
-        self.part2 = self._load(C.Part2NeuralNet, C.PART2_MODEL_FILE, "Part 2 model")
+        # ---- PART 2: decision rules on all IMU outputs (part2_rules.json)
+        self.part2 = self._load(C.Part2Rules, C.PART2_RULES_FILE, "Part 2 rules")
         self.smooth2 = C.Smoother()
-        self.probs = None
+        self.why2 = None                 # Part 2's features and the questions it answered
         self.raw2 = None
 
         self.window = np.zeros((0, len(C.COLUMNS)))
@@ -113,9 +118,9 @@ class Wearable:
         if self.part1:
             raw1, self.peak = self.part1.classify(self.window)
             self.smooth1.update(raw1)
-        # ---- PART 2: all 6 channels go into the network
+        # ---- PART 2: features of all 6 channels go through the questions
         if self.part2:
-            self.raw2, self.probs = self.part2.classify(self.window)
+            self.raw2, self.why2 = self.part2.classify(self.window)
             self.smooth2.update(self.raw2)
 
     def active_state(self):
@@ -125,7 +130,7 @@ class Wearable:
         if self.mode == 1 and not self.part1:
             return "NO CAL"
         if self.mode == 2 and not self.part2:
-            return "NO MODEL"
+            return "NO CAL"
         state = self.active_state()
         return C.STATE_WORDS[state] if state else "HW6"
 
@@ -154,9 +159,10 @@ class Wearable:
             msg["part2"] = {
                 "state": self.smooth2.state,
                 "raw": self.raw2,
-                "classes": self.part2.classes,
-                "probs": None if self.probs is None else [round(float(p), 3) for p in self.probs],
-                "created": self.part2.info.get("created"),
+                "features": None if self.why2 is None else
+                {k: round(v, 3) for k, v in self.why2["features"].items()},
+                "path": None if self.why2 is None else self.why2["path"],
+                "created": self.part2.created,
             }
         return msg
 

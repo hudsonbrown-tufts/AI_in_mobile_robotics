@@ -1,0 +1,154 @@
+{
+  "direction": "+x",
+  "order": [
+    "biking",
+    "standing",
+    "walking",
+    "running"
+  ],
+  "thresholds": [
+    0.083,
+    0.5063,
+    1.9413
+  ],
+  "created": "2026-10-26 11:02:35",
+  "scored_by": "all data (only 1 person)",
+  "accuracy": 1.0,
+  "people": [
+    "hudson"
+  ],
+  "windows_per_state": {
+    "standing": 230,
+    "walking": 230,
+    "running": 230,
+    "biking": 230
+  },
+  "peak_stats_g": {
+    "standing": {
+      "median": 0.207,
+      "p5": 0.197,
+      "p95": 0.219,
+      "std": 0.007282789095753938,
+      "n": 230
+    },
+    "walking": {
+      "median": 1.338,
+      "p5": 0.951,
+      "p95": 1.795,
+      "std": 0.23223695349984347,
+      "n": 230
+    },
+    "running": {
+      "median": 4.9335,
+      "p5": 3.136,
+      "p95": 9.466,
+      "std": 1.8961370336447647,
+      "n": 230
+    },
+    "biking": {
+      "median": -0.28,
+      "p5": -0.427,
+      "p95": -0.031,
+      "std": 0.11886159096690302,
+      "n": 230
+    }
+  },
+  "all_directions": [
+    {
+      "direction": "+x",
+      "accuracy": 1.0,
+      "margin": 0.6300584427829171,
+      "order": [
+        "biking",
+        "standing",
+        "walking",
+        "running"
+      ],
+      "thresholds": [
+        0.083,
+        0.5062563706743884,
+        1.94132285327876
+      ]
+    },
+    {
+      "direction": "-x",
+      "accuracy": 0.8358695652173913,
+      "margin": -1.0223630580365448,
+      "order": [
+        "standing",
+        "biking",
+        "walking",
+        "running"
+      ],
+      "thresholds": [
+        0.5125,
+        1.5775000000000001,
+        2.443
+      ]
+    },
+    {
+      "direction": "+y",
+      "accuracy": 0.9293478260869565,
+      "margin": -0.31349692271221985,
+      "order": [
+        "standing",
+        "biking",
+        "walking",
+        "running"
+      ],
+      "thresholds": [
+        1.2027852308470812,
+        1.7725,
+        2.557
+      ]
+    },
+    {
+      "direction": "-y",
+      "accuracy": 0.7989130434782609,
+      "margin": -1.9300190447088896,
+      "order": [
+        "standing",
+        "walking",
+        "running",
+        "biking"
+      ],
+      "thresholds": [
+        -0.59,
+        0.14550000000000002,
+        0.41400000000000003
+      ]
+    },
+    {
+      "direction": "+z",
+      "accuracy": 0.9684782608695652,
+      "margin": -0.11532757262614031,
+      "order": [
+        "standing",
+        "biking",
+        "walking",
+        "running"
+      ],
+      "thresholds": [
+        0.282575,
+        0.9054469217443456,
+        1.6880000000000002
+      ]
+    },
+    {
+      "direction": "-z",
+      "accuracy": 0.8021739130434782,
+      "margin": -1.092940336094358,
+      "order": [
+        "standing",
+        "biking",
+        "walking",
+        "running"
+      ],
+      "thresholds": [
+        0.09349999999999997,
+        0.6445000000000001,
+        1.385
+      ]
+    }
+  ]
+}
