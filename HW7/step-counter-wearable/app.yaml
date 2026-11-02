@@ -1,0 +1,6 @@
+name: Ankle Step Counter
+description: "HW7: MPU-6050 on the ankle. A small neural network ensemble counts steps and estimates distance walked, each with a live uncertainty (± range), and scrolls the step count on the LED matrix."
+icon: 👣
+version: "1.0.0"
+ports: []
+bricks: []

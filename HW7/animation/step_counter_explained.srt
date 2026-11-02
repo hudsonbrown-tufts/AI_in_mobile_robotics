@@ -1,0 +1,83 @@
+1
+00:00:00,400 --> 00:00:03,605
+How the step counter works, from the network to backpropagation.
+
+2
+00:00:04,055 --> 00:00:07,643
+The ankle sensor feels one leg: each swing is a stride, or 2 steps.
+
+3
+00:00:07,693 --> 00:00:10,270
+It sends 6 signals, 50 times a second.
+
+4
+00:00:10,720 --> 00:00:15,122
+Every 0.24 s, the network reads the last 2 seconds, scaled to the same size.
+
+5
+00:00:15,572 --> 00:00:19,484
+Layer 1 slides 16 filters along the signals, since a stride looks the same anywhere.
+
+6
+00:00:19,534 --> 00:00:24,323
+ReLU keeps positive matches and zeroes the rest. Without it, the layers collapse into one.
+
+7
+00:00:24,373 --> 00:00:25,974
+Max-pool halves the length.
+
+8
+00:00:26,424 --> 00:00:29,974
+Layers 2 and 3 repeat this, each seeing farther back: about 0.7 s by layer 3.
+
+9
+00:00:30,424 --> 00:00:33,974
+Averaging over time keeps HOW MUCH stride is present, not WHERE: exactly what a rate needs.
+
+10
+00:00:34,424 --> 00:00:36,424
+Two heads give a guess μ and an uncertainty σ, for cadence and for walking speed.
+
+11
+00:00:36,474 --> 00:00:38,974
+Softplus keeps both positive.
+
+12
+00:00:39,424 --> 00:00:42,684
+Training runs in PyTorch. At first, the guess is wrong.
+
+13
+00:00:42,734 --> 00:00:45,430
+The loss punishes confident mistakes AND needless vagueness.
+
+14
+00:00:45,480 --> 00:00:48,429
+loss.backward() runs the chain rule in reverse, giving every weight a gradient.
+
+15
+00:00:48,479 --> 00:00:51,872
+Adam nudges each weight downhill, 66 times through all the walks.
+
+16
+00:00:52,322 --> 00:00:55,402
+Why 5 networks? One network can't tell when it's out of its depth.
+
+17
+00:00:55,452 --> 00:00:58,302
+5 copies start from different random weights and trust each walk differently.
+
+18
+00:00:58,352 --> 00:01:03,520
+Where the data is clear, they agree. Where it isn't, they disagree, and the ± grows.
+
+19
+00:01:03,970 --> 00:01:06,974
+Every 0.24 s the board adds cadence × time, and the uncertainty adds up too.
+
+20
+00:01:07,024 --> 00:01:11,599
+You counted 111 steps. The network said 110 ± 6.
+
+21
+00:01:12,049 --> 00:01:15,599
+PyTorch trains on the laptop. The board just runs the frozen network (numpy, no backprop).

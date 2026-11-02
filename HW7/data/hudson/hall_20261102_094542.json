@@ -1,0 +1,10 @@
+{
+  "steps": 33,
+  "lengths": 2,
+  "hall_m": 11.0,
+  "distance_m": 22.0,
+  "recorded": "2026-11-02 09:45:42",
+  "auto_steps": 34,
+  "label_note": "typed 33 steps = 16.5 strides, found 17 (threshold 115 deg/s)",
+  "labels_ok": true
+}
